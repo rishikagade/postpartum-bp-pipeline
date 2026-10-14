@@ -1,0 +1,19 @@
+[project]
+name = "ppbp"
+version = "0.1.0"
+description = "Postpartum blood pressure data pipeline with lineage (synthetic data, not for clinical use)"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

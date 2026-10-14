@@ -1,0 +1,14 @@
+# Downloaded / generated data is reproducible from `make setup`, so it is not committed.
+data/raw/
+data/*.duckdb
+data/*.duckdb.wal
+data/out/
+
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+node_modules/
+dist/
+.DS_Store
