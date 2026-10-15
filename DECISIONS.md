@@ -17,12 +17,14 @@ The download is 95 MB zipped and 1.1 GB unzipped. It's reproducible from a pinne
 The data already contains pregnancies. 84 patients have a delivery Procedure (Childbirth, Cesarean section, Instrumental delivery, or Spontaneous breech delivery). 18 of them have a Preeclampsia or Antepartum eclampsia Condition at some point. So the cohort will **not** be built by tagging arbitrary women of childbearing age. Proposed instead:
 1. Anchor: the patient's most recent delivery Procedure. Its Encounter's `period.end` is the discharge time.
 2. "Native" hypertensive disorder of pregnancy (HDP): a Preeclampsia or Antepartum eclampsia onset within 280 days before that delivery. By a manual count from the exploration output, about 11 living patients qualify. The cohort step will recompute this in code.
-3. "Augmented" HDP: a seeded, configurable fraction of the remaining delivery patients gets a **new** Condition resource. Its code is SNOMED 48194001 "Pregnancy-induced hypertension" *(code to be checked in Phase 3)*, and it carries a `meta.tag` marking it as synthetic cohort augmentation. These resources go in a separate FHIR bundle file, so they flow through the same ingestion and lineage as everything else. The original Synthea files are never edited.
-4. Exclusions: patients who died before discharge + 10 days.
+3. "Augmented" HDP: a seeded, configurable fraction of the remaining delivery patients gets a **new** Condition resource. Its code is SNOMED 48194001 "Pregnancy-induced hypertension" (checked in Phase 3: an active concept, and part of HL7's maternal-health value set for hypertensive disorders of pregnancy), and it carries a `meta.tag` marking it as synthetic cohort augmentation. These resources go in a separate FHIR bundle file, so they flow through the same ingestion and lineage as everything else. The original Synthea files are never edited.
+4. Exclusions: patients who died before discharge + 10 days. *(Changed in Phase 3 review: only deaths before discharge are excluded. See D15.)*
 
 **Confirmed in review:** the default augmentation fraction is ~50% of non-native delivery patients (configurable, seeded), which gives roughly 45 HDP patients.
 
 Cost: a small cohort (roughly 40–50 patients). That's enough to exercise every pipeline path, and it avoids inventing deliveries.
+
+**Built in Phase 3:** 84 delivery patients, 11 with native HDP (matching the manual count), 37 augmented, so **48 in the cohort** and 36 excluded. See D12–D15.
 
 ### D4. Discharge = end of the delivery encounter, as Synthea records it
 Every Synthea delivery happens in an "Obstetric emergency hospital admission" (class EMER) that lasts about one hour. Real postpartum stays are longer. The proposal is to keep the source value rather than invent a length of stay, and list it as a limitation. **Confirmed in review:** keep the source value; no synthetic length of stay.
@@ -70,3 +72,36 @@ Each load runs in one transaction. A failure rolls everything back and leaves a 
 The repo sits under `~/Documents`, which iCloud Drive syncs on this machine. A full load takes about 50 s with the database outside iCloud, and about 4.5 min inside it (the CPU sits mostly idle). Setting `PPBP_DB_PATH` puts the database elsewhere. Sync also sets macOS's `hidden` flag on the venv's editable-install `.pth` file, and Python 3.11.13 skips hidden `.pth` files, so the Makefile and pytest put `src` on `PYTHONPATH` directly.
 
 **Decided in review:** the repo stays in `~/Documents`, and the data stays off iCloud. Locally, `data/` is a symlink to `data.nosync/`, and iCloud doesn't sync folders whose names end in `.nosync`. A full reload now takes about 43 s. Code doesn't need to know about this: ingest records paths without following symlinks, so source files are still recorded as `data/raw/...`. On a fresh clone `data/` is a normal folder, and `/data` and `/data.nosync/` are both git-ignored. `PPBP_DB_PATH` is still available for putting the database elsewhere.
+
+## Phase 3: Postpartum cohort
+
+### D12. The cohort definition is a versioned config file
+`config/cohort.toml` holds the delivery and HDP codes, the 280-day lookback, the 10-day survival window, and the augmentation seed and fraction. Each build writes a row to `cohort.build_run` with the config's SHA-256 and the FHIR load that carried the augmentation bundle. This follows the same principle as the Phase 4+ rules config: definitions live in config, not in code.
+- `make cohort` is the whole step: find deliveries, decide who's in, write the augmentation bundle (`data/generated/cohort_augmentation.json`), load it with the normal FHIR ingest, check that it arrived intact, then write `cohort.postpartum_cohort` and `cohort.exclusion`.
+- Every delivery patient ends up in exactly one of those two tables. Exclusion reasons are `died_before_discharge`, `delivery_encounter_missing`, and `no_hdp_not_augmented`. On this data, all 36 exclusions are `no_hdp_not_augmented`.
+- The cohort tables hold only IDs, codes and timestamps (D6). Each `*_id` points to a resource in the raw store.
+
+### D13. Augmentation is reproducible to the byte
+- **Who:** eligible patients without native HDP, sorted by ID, then a seeded `random.sample` of `fraction × pool` (rounded half up: 73 × 0.5 → 37).
+- **IDs:** each augmented Condition's id is a UUIDv5 of patient + delivery procedure, so it's the same on every run. A rebuild writes an identical bundle, the reload reports all 37 unchanged, and the cohort comes out identical.
+- **Onset:** a per-patient seeded draw of 14–84 days before delivery. **Confirmed in review.** This falls in late pregnancy, within the period after 20 weeks' gestation when pregnancy-induced (gestational) hypertension is diagnosed ([ACOG FAQ](https://www.acog.org/womens-health/faqs/preeclampsia-and-high-blood-pressure-during-pregnancy)). For a term delivery at 37–40 weeks, it works out to roughly 25–38 weeks' gestation. Synthea doesn't record gestational age, so a preterm delivery could put the onset slightly earlier.
+- **Resource shape:** `clinicalStatus` active, `verificationStatus` confirmed, category `problem-list-item`, no encounter link, and `meta.tag` `urn:ppbp:provenance|synthetic-cohort-augmentation` on both the Condition and the bundle.
+- **Never "native":** the native-HDP query skips anything with that tag, whatever its code. Without this, a rebuild could count the augmentation as native.
+- Cost: changing the seed or fraction leaves the earlier augmented Conditions in the raw store, because ingest doesn't delete (D9). The cohort only uses the ones the current config selects, so they have no effect, but they remain visible in `raw`. Later phases must start from the cohort table, not from "all Conditions".
+
+### D14. Native HDP window and earlier pregnancies
+Native HDP means an onset from 280 days before delivery up to discharge. If there are several, the latest one counts. 18 delivery patients have Preeclampsia or Antepartum eclampsia at some point. 11 are within the window of their most recent delivery. The other 7 had it in an earlier pregnancy: 4 of them were then drawn for augmentation, and 3 weren't.
+
+**Changed in review:** this risk factor is now recorded but not used for selection. `cohort.postpartum_cohort.prior_hdp` is true when the patient has an untagged Preeclampsia or Antepartum eclampsia onset before the lookback window of the most recent delivery. Membership is decided exactly as before, and a test checks this. On this data, `prior_hdp` is true for 4 cohort members, all augmented. The 3 excluded patients with prior HDP aren't in the cohort table, so the flag isn't recorded for them.
+
+### D15. Only deaths before discharge are excluded. Later deaths stay in, with the date recorded
+**Decided in review** (replaces the "discharge + 10 days" rule in D3): a patient who dies before discharge is excluded as `died_before_discharge`. A patient who dies during or after the monitoring period stays in the cohort as a deliberate edge case, and `cohort.postpartum_cohort.deceased_at` records the date.
+
+On this data the change removes no one. Nobody died between discharge and day 10, so the cohort is still 48, with the same patients. Two cohort members die later: one 12 days after discharge, one about a year after.
+
+**What later phases must do with `deceased_at`:**
+- **Phase 4:** the home reading simulator generates no readings after `deceased_at`.
+- **Phase 5:** the stale-data rule must not raise alerts for a patient after `deceased_at`. Silence after death isn't "gone quiet".
+
+### D16. All timestamps in UTC
+The DuckDB session runs in UTC. Source timestamps keep their offsets when parsed and are stored as `TIMESTAMPTZ`. Values cross into Python as UTC `TIMESTAMP`, which avoids a `pytz` dependency.

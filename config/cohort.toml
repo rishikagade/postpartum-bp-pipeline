@@ -1,0 +1,26 @@
+# Postpartum cohort definition (DECISIONS D3, D4, D12). Changing anything here changes the cohort;
+# each build records this file's SHA-256 and version in cohort.build_run.
+# v2: death exclusion is "before discharge" only (was discharge + 10 days); prior_hdp recorded.
+version = "2"
+
+# Delivery Procedures that anchor the cohort (SNOMED). The most recent one per patient is used.
+# Childbirth, Cesarean section, Instrumental delivery, Spontaneous breech delivery.
+delivery_codes = ["66348005", "11466000", "236974004", "177157003"]
+
+# "Native" hypertensive disorder of pregnancy: Preeclampsia, Antepartum eclampsia (SNOMED),
+# with onset from `hdp_lookback_days` before delivery up to discharge. An earlier onset sets
+# prior_hdp, which is recorded but not used for selection (D14).
+native_hdp_codes = ["398254007", "198992004"]
+hdp_lookback_days = 280
+
+# Patients who die before discharge are excluded. Later deaths stay in, with deceased_at (D15).
+
+[augmentation]
+# Seeded fraction of eligible delivery patients without native HDP who get a synthetic,
+# tagged Condition. Loaded through the normal FHIR ingest from its own bundle.
+seed = 20261015
+fraction = 0.5
+code = "48194001"
+display = "Pregnancy-induced hypertension"
+# Onset is drawn uniformly (per patient, seeded) from this many days before delivery.
+onset_days_before_delivery = [14, 84]

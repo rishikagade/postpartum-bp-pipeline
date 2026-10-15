@@ -4,7 +4,7 @@ PY := $(VENV)/bin/python
 # Editable-install .pth files can get the macOS "hidden" flag, which Python skips.
 export PYTHONPATH := src
 
-.PHONY: setup data explore walkthrough ingest test
+.PHONY: setup data explore walkthrough ingest cohort test
 
 # One-time setup: virtualenv, dependencies, and the Synthea sample download.
 setup:
@@ -27,6 +27,10 @@ walkthrough:
 # Phase 2: load the FHIR bundles into DuckDB (data/ppbp.duckdb). Safe to re-run.
 ingest:
 	$(PY) -m ppbp.fhir.ingest
+
+# Phase 3: postpartum cohort (config/cohort.toml). Loads its augmentation bundle via ingest.
+cohort:
+	$(PY) -m ppbp.cohort.build
 
 test:
 	$(PY) -m pytest -q
