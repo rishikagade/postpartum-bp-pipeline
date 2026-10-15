@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
@@ -36,10 +37,13 @@ def canonical_hash(resource: Resource) -> str:
 
 
 def display_path(path: Path) -> str:
+    # abspath, not resolve(): `data` may be a symlink to `data.nosync` (DECISIONS D11), and the
+    # recorded path should be the same on every machine.
+    absolute = Path(os.path.abspath(path))
     try:
-        return str(path.resolve().relative_to(PROJECT_ROOT))
+        return str(absolute.relative_to(PROJECT_ROOT))
     except ValueError:
-        return str(path.resolve())
+        return str(absolute)
 
 
 def collect_files(inputs: list[Path]) -> list[Path]:

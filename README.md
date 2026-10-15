@@ -13,7 +13,7 @@ make walkthrough  # Phase 1: one patient's record, in plain language
 make ingest       # Phase 2: load the FHIR bundles into DuckDB; safe to re-run
 ```
 
-The database goes to `data/ppbp.duckdb`. Set `PPBP_DB_PATH` to put it elsewhere (useful if the project is in an iCloud-synced folder; see DECISIONS D11).
+The database goes to `data/ppbp.duckdb`. If the project is in an iCloud-synced folder, keep `data/` off iCloud with `mv data data.nosync && ln -s data.nosync data` (DECISIONS D11), or set `PPBP_DB_PATH` to put the database elsewhere.
 
 - Requirements: [REQUIREMENTS.md](REQUIREMENTS.md)
 - Decisions and assumptions: [DECISIONS.md](DECISIONS.md)

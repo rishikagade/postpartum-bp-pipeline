@@ -1,8 +1,8 @@
 # Downloaded / generated data is reproducible from `make setup`, so it is not committed.
-data/raw/
-data/*.duckdb
-data/*.duckdb.wal
-data/out/
+# Locally, `data` may be a symlink to `data.nosync/`, which iCloud Drive doesn't sync (DECISIONS D11).
+/data
+/data/
+/data.nosync/
 
 .venv/
 __pycache__/
