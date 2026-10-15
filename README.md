@@ -10,7 +10,10 @@ Work in progress, built in phases. Full README in Phase 8.
 make setup        # virtualenv + download Synthea FHIR R4 sample (checksum-verified)
 make explore      # Phase 1: resource summary, examples, BP structure
 make walkthrough  # Phase 1: one patient's record, in plain language
+make ingest       # Phase 2: load the FHIR bundles into DuckDB; safe to re-run
 ```
+
+The database goes to `data/ppbp.duckdb`. Set `PPBP_DB_PATH` to put it elsewhere (useful if the project is in an iCloud-synced folder; see DECISIONS D11).
 
 - Requirements: [REQUIREMENTS.md](REQUIREMENTS.md)
 - Decisions and assumptions: [DECISIONS.md](DECISIONS.md)

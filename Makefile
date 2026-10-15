@@ -1,8 +1,10 @@
 PYTHON ?= python3.11
 VENV := .venv
 PY := $(VENV)/bin/python
+# Editable-install .pth files can get the macOS "hidden" flag, which Python skips.
+export PYTHONPATH := src
 
-.PHONY: setup data explore walkthrough test
+.PHONY: setup data explore walkthrough ingest test
 
 # One-time setup: virtualenv, dependencies, and the Synthea sample download.
 setup:
@@ -21,6 +23,10 @@ explore:
 # Phase 1: plain-language timeline of the walkthrough patient.
 walkthrough:
 	$(PY) -m ppbp.fhir.explore --patient REMOVED-RECORD-NUMBER
+
+# Phase 2: load the FHIR bundles into DuckDB (data/ppbp.duckdb). Safe to re-run.
+ingest:
+	$(PY) -m ppbp.fhir.ingest
 
 test:
 	$(PY) -m pytest -q
