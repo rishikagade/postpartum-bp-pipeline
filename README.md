@@ -16,6 +16,7 @@ make explore      # Phase 1: resource summary, examples, BP structure
 make walkthrough  # Phase 1: one patient's record, in plain language
 make ingest       # Phase 2: load the FHIR bundles into DuckDB; safe to re-run
 make cohort       # Phase 3: build the postpartum cohort (config/cohort.toml)
+make home         # Phase 4: simulate, load and clean home BP readings; build timelines
 ```
 
 The database goes to `data/ppbp.duckdb`. If the project is in an iCloud-synced folder, keep `data/` off iCloud with `mv data data.nosync && ln -s data.nosync data` (DECISIONS D11), or set `PPBP_DB_PATH` to put the database elsewhere.
@@ -43,6 +44,12 @@ The validation rules (Phase 5, not built yet) will use ACOG's definitions [[10]]
 - **Hypertension in pregnancy:** systolic ≥140 mm Hg and/or diastolic ≥90 mm Hg. Gestational hypertension first appears after 20 weeks of pregnancy.
 - **Severe range:** systolic ≥160 mm Hg and/or diastolic ≥110 mm Hg.
 
+## Home readings (simulated)
+
+The simulated protocol follows the Heart Safe Motherhood program: readings twice daily for 10 days after discharge [[11]]. That covers ACOG's 7–10 day check [[4]]. The length can be set up to 42 days; a hospital-level program has monitored patients until 6 weeks postpartum [[12]].
+
+The messiness injected into the readings (dropouts, missed readings, duplicates, late arrivals, wrong time zones, impossible values, unit errors) uses assumed rates, recorded in DECISIONS D21. On the 48-patient cohort, `make home` produces 777 submissions. Cleaning accepts 737 and rejects 40, each with a reason. It also checks, line by line, that every injected problem was handled (DECISIONS D22).
+
 ## Project documents
 
 - Requirements: [REQUIREMENTS.md](REQUIREMENTS.md)
@@ -51,7 +58,7 @@ The validation rules (Phase 5, not built yet) will use ACOG's definitions [[10]]
 
 ## Sources
 
-Every link below was checked on 2026-10-15 to confirm it supports the statement that cites it.
+Every link below was checked on 2026-10-15 or 2026-10-16 to confirm it supports the statement that cites it.
 
 1. <a id="s1"></a>Walonoski J, Kramer M, Nichols J, et al. Synthea: An approach, method, and software mechanism for generating synthetic patients and the synthetic electronic health care record. *J Am Med Inform Assoc.* 25(3):230–238. https://doi.org/10.1093/jamia/ocx079
 2. <a id="s2"></a>Synthea source code. https://github.com/synthetichealth/synthea
@@ -63,6 +70,8 @@ Every link below was checked on 2026-10-15 to confirm it supports the statement 
 8. <a id="s8"></a>U.S. National Library of Medicine, Clinical Table Search Service: LOINC lookups for [85354-9](https://clinicaltables.nlm.nih.gov/api/loinc_items/v3/search?terms=85354-9&sf=LOINC_NUM&df=LOINC_NUM,LONG_COMMON_NAME), [8480-6](https://clinicaltables.nlm.nih.gov/api/loinc_items/v3/search?terms=8480-6&sf=LOINC_NUM&df=LOINC_NUM,LONG_COMMON_NAME), [8462-4](https://clinicaltables.nlm.nih.gov/api/loinc_items/v3/search?terms=8462-4&sf=LOINC_NUM&df=LOINC_NUM,LONG_COMMON_NAME).
 9. <a id="s9"></a>HL7 FHIR IG *Longitudinal Maternal & Infant Health Information for Research* (STU 1.0.0), ValueSet: Hypertensive Disorders of Pregnancy SNOMED CT. https://hl7.org/fhir/us/mihr/STU1/ValueSet-hypertensive-disorders-pregnancy-SNOMED.html
 10. <a id="s10"></a>ACOG. Preeclampsia and High Blood Pressure During Pregnancy (FAQ). https://www.acog.org/womens-health/faqs/preeclampsia-and-high-blood-pressure-during-pregnancy
+11. <a id="s11"></a>Janssen MK, Demers S, Srinivas SK, et al. Implementation of a text-based postpartum blood pressure monitoring program at 3 different academic sites. *Am J Obstet Gynecol MFM.* 2021;3(6):100446. https://doi.org/10.1016/j.ajogmf.2021.100446
+12. <a id="s12"></a>Hauspurg A, Lemon LS, Quinn BA, et al. A Postpartum Remote Hypertension Monitoring Protocol Implemented at the Hospital Level. *Obstet Gynecol.* 2019;134(4):685–691. https://doi.org/10.1097/AOG.0000000000003479
 
 [1]: #s1
 [2]: #s2
@@ -74,3 +83,5 @@ Every link below was checked on 2026-10-15 to confirm it supports the statement 
 [8]: #s8
 [9]: #s9
 [10]: #s10
+[11]: #s11
+[12]: #s12

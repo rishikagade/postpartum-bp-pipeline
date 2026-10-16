@@ -1,0 +1,56 @@
+# Home blood pressure readings: simulation and cleaning (DECISIONS D17-D23).
+# Every value is seeded and configurable. Each load records this file's SHA-256 and version.
+version = "1"
+seed = 20261016
+
+[monitoring]
+# Twice daily for 10 days after discharge, as in the Heart Safe Motherhood program (D17).
+days = 10
+max_days = 42                       # upper bound for `days` (D17)
+# Local reading times, with a uniform +/- jitter in minutes.
+slots = ["08:00", "18:00"]
+slot_jitter_minutes = 60
+# All 48 cohort patients have Massachusetts addresses (pipeline output), so one zone (D18).
+timezone = "America/New_York"
+
+[consent]
+# Share of cohort patients without home-monitoring consent. Exists only to exercise
+# consent gating in Phase 5b (D19). Rounded half up.
+fraction_without = 0.10
+
+[blood_pressure]
+# Patient-level BP profiles (D20, assumptions). Fractions of the cohort, rounded half up.
+severe_patient_fraction = 0.15     # some readings in the severe range (>=160 and/or >=110)
+elevated_patient_fraction = 0.35   # some readings >=140 and/or >=90, none severe
+# Baselines (mean systolic, mean diastolic) and reading-to-reading noise (SD), mm Hg.
+normal_baseline = [124, 78]
+elevated_baseline = [138, 88]
+severe_baseline = [146, 94]
+noise_sd = [7, 5]
+# Severe-profile patients get this many severe spikes, drawn from these ranges.
+severe_spikes = [1, 3]
+severe_systolic = [160, 185]
+severe_diastolic = [100, 120]
+
+[messiness]
+# Share of patients who stop submitting before the end (D21, assumption).
+dropout_fraction = 0.30
+# Shares of scheduled or submitted readings (D21, assumptions).
+missed_fraction = 0.10              # scheduled readings never submitted
+duplicate_fraction = 0.05           # submitted again: half exact resends, half near-duplicates
+late_fraction = 0.05                # received 1-4 days after measurement
+wrong_timezone_fraction = 0.03      # local wall-clock time labelled as UTC
+impossible_value_fraction = 0.01    # physiologically impossible values
+unit_or_field_error_fraction = 0.01 # kPa, unknown unit, missing or non-numeric field
+
+[cleaning]
+# Plausibility ranges in mm Hg (D22, assumptions). Diastolic must also be below systolic.
+systolic_range = [60, 260]
+diastolic_range = [30, 160]
+# Two readings from one patient within this many minutes, with both values within this
+# many mm Hg, are near-duplicates. The earliest-received one is kept (D22).
+near_duplicate_minutes = 5
+near_duplicate_mmhg = 10
+# Received more than this many hours after measurement: accepted, but flagged as late.
+late_after_hours = 24
+kpa_to_mmhg = 7.50062

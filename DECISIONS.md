@@ -105,3 +105,77 @@ On this data the change removes no one. Nobody died between discharge and day 10
 
 ### D16. All timestamps in UTC
 The DuckDB session runs in UTC. Source timestamps keep their offsets when parsed and are stored as `TIMESTAMPTZ`. Values cross into Python as UTC `TIMESTAMP`, which avoids a `pytz` dependency.
+
+## Phase 4: Home blood pressure readings
+
+`make home` runs three steps:
+1. Simulate: `ppbp.home.simulate` writes the export files.
+2. Load and clean: `ppbp.home.load` loads them, cleans them, and builds the timeline.
+3. Reconcile: `ppbp.home.reconcile` compares what was injected with what cleaning did.
+
+Every rate below is in `config/home.toml`, seeded and configurable. Each entry is marked **sourced** or **assumption**. Counts come from the pipeline's own output on the 48-patient cohort.
+
+### D17. Monitoring: 10 days, twice daily, configurable up to 42 days (sourced)
+- **10 days, twice daily:** the Heart Safe Motherhood program (the plan attributes it to Penn) texted patients "to check their blood pressures twice daily for 10 days after discharge". Source: Janssen et al., *Am J Obstet Gynecol MFM* 2021;3(6):100446, https://doi.org/10.1016/j.ajogmf.2021.100446 (abstract read via Europe PMC).
+- **Up to 42 days:** a hospital-level program ran remote monitoring "after hospital discharge until 6 weeks postpartum". Source: Hauspurg et al., *Obstet Gynecol* 2019;134(4):685–691, https://doi.org/10.1097/AOG.0000000000003479 (abstract read via Europe PMC).
+- **Fits ACOG's window:** ACOG Committee Opinion 736 recommends BP evaluation for HDP no later than 7–10 days postpartum, and within 72 hours for severe hypertension (README source 4).
+- **Not cited:** the plan attributes the 10→42 day extension to ChristianaCare. I couldn't find any source for it (web search, Europe PMC, a 2025 *Delaware Journal of Public Health* issue, and a 2026 rapid review of 52 home-BP studies), so it isn't cited. Hauspurg 2019 supports the 42-day maximum instead.
+- **Schedule:** readings at 08:00 and 18:00 local time, each ±60 min. Day 1 is the first local calendar day after discharge. *(The times are an assumption.)*
+
+### D18. One time zone for everyone: America/New_York (assumption from pipeline output)
+All 48 cohort patients have Massachusetts addresses. That was checked as an aggregate count; addresses aren't copied anywhere. Postpartum days are local calendar days in that zone.
+
+### D19. Consent: 10% of cohort patients without home-monitoring consent (assumption)
+This exists only to exercise consent gating in Phase 5b. 10% of 48, rounded half up, gives **5 patients**. Their readings are still loaded and cleaned. `home.enrollment.consent_home_monitoring` carries the flag, and Phase 5b holds their readings back from alerting.
+
+### D20. BP profiles, so that Phase 5 alerts fire (assumption)
+- **Profiles:** each patient gets one profile: severe 15% (7 patients), elevated 35% (17), or normal (24). Baselines are 146/94, 138/88 and 124/78 mm Hg, with noise SD 7/5. Outside of spikes, values are capped at 159/109, so only spikes reach the severe range.
+- **Spikes:** severe-profile patients get 1–3 spikes of 160–185 systolic and 100–120 diastolic.
+- **Result:** **11 severe-range readings from 6 patients** after cleaning. One severe-profile patient's spikes fell on missed or post-dropout slots. 29 patients have at least one reading at ≥140/90 that isn't severe. **Accepted in review as is.**
+- **Context, not calibration:** Janssen 2021 reports elevated BP recorded for 35% of participants. The abstract doesn't define "elevated", so the 35% isn't used directly. The thresholds used to label readings are ACOG's (README source 10).
+
+### D21. Messiness rates (one sourced figure was unverifiable, so all are assumptions)
+| Issue | Configured | Produced | Of | Basis |
+|---|---|---|---|---|
+| Patients who stop early | 30% | 14 | 48 patients | Assumption. The plan cites ChristianaCare reporting 70% completing the full 10 days; that figure couldn't be verified (see D17), so it isn't cited. Context: in Janssen 2021, 63% submitted in both days 1–4 and days 7–10. In Hauspurg 2019, 83% continued beyond 3 weeks. |
+| Missed readings | 10% | 105 | 850 scheduled slots before dropout or death | Assumption |
+| Duplicate submissions | 5% | 32 | 745 original submissions | Assumption. Half are exact resends (same payload) and half are near-duplicates (new id, +1–3 min, ±4/±3 mm Hg). |
+| Late submissions | 5% | 36 | 745 | Assumption. Received 1–4 days after measurement. |
+| Wrong time zone | 3% | 22 | 745 | Assumption. Local wall-clock time labelled `Z`. |
+| Impossible values | 1% | 3 | 745 | Assumption. Systolic 0, 999 or 25, or diastolic above systolic. |
+| Unit or field errors | 1% | 6 | 745 | Assumption. kPa, `cmHg`, a missing diastolic, or a non-numeric systolic. |
+
+A reading carries at most one value or unit problem, so each rejection has a single cause. A stopping patient submits on day 1 at least, and not on the last day. No reading is generated at or after `deceased_at` (D15).
+
+### D22. Cleaning rules (assumptions unless stated)
+- **Rejected, with a reason:** `invalid_json`, `missing_field`, `unknown_patient`, `non_numeric`, `unknown_unit`, `implausible_value`, `invalid_timestamp`, `outside_monitoring_window`, `after_death`, `duplicate_exact`, `duplicate_near`. Rejections go to `home.reading_rejection` with the exact raw line reference. On this data, every one of the 777 lines is either accepted (737) or rejected (40).
+- **Plausible:** systolic 60–260, diastolic 30–160, and diastolic below systolic. Severe readings (up to 185/120 here) pass.
+- **Units:** `mmHg`, `mm Hg` and `mm[Hg]` (any case) are accepted. kPa is converted at 7.50062 mm Hg/kPa, rounded, and flagged `unit_converted_kpa`. Any other unit is rejected. Values are never guessed.
+- **Time zones:** if a timestamp's offset doesn't match the patient's zone at that wall-clock time, the wall-clock time is kept, re-read in the patient's zone, and flagged `tz_corrected`. This assumes patients stay in their enrolled zone; a traveling patient's correct reading would be "corrected" wrongly. Daylight-saving changes are handled; a test covers the March 2020 switch. **Accepted in review as is.** For lineage, each corrected reading carries the flag on both `home.reading` and `timeline.bp_reading`, and `home.reading.measured_at_source` keeps the timestamp exactly as submitted next to the corrected UTC `measured_at`. On this data that's 22 readings, all flagged, and no `Z`-labelled reading went uncorrected.
+- **Late:** received more than 24 h after measurement. The reading is accepted and flagged `late`, not rejected, because a late reading is still a real reading.
+- **Duplicates:** checked only among otherwise-valid readings, processed in order received:
+  - same `submission_id` → `duplicate_exact`;
+  - same patient, within 5 min, both values within 10 mm Hg → `duplicate_near`.
+
+  The earliest received copy is kept, and the rejection names it in `duplicate_of`. A resend of an invalid reading is rejected for the underlying problem; on this data, one near-duplicate of an impossible value shows up as `implausible_value`.
+- **Window:** from discharge to the end of the last postpartum day in local time, or `deceased_at` if earlier. Discharge and death come from the cohort table, not the roster.
+- **Result:** `make home` reconciles every injected issue line by line. All were handled as expected (or rejected for an underlying problem, as above), none were missed, and no outcome lacked an injected cause.
+
+### D23. Raw home exports are file snapshots; the answer key is never read by the pipeline
+- `raw.home_line_version` keeps every version of every line, and `raw.home_line_current` holds the latest snapshot of each file. Unlike FHIR (D9), a line that disappears from a re-exported file is recorded as `removed`, because an export file is a complete snapshot. Re-running on the same files reports everything unchanged, and the cleaned tables come out identical.
+- Each run rebuilds `home.*` and `timeline.bp_reading` inside one transaction, recorded in `home.clean_run` with the config hash.
+- `injected_issues.json` is the simulator's answer key. Only `ppbp.home.reconcile` and the tests read it.
+- **Count reconciliation** (added in review): `make home` prints every count from scheduled readings to accepted and rejected, and fails if any step doesn't add up. The simulator counts each scheduled slot as exactly one of after death, after dropout, missed, or submitted, so the chain is built from direct counts, not subtraction. On this data:
+
+  | Step | Count | Made up of |
+  |---|---|---|
+  | Scheduled readings | 960 | 850 still expected + 110 after dropout + 0 after death |
+  | Still expected | 850 | 745 submitted + 105 missed |
+  | Reading lines written | 777 | 745 submitted + 32 duplicate lines |
+  | Raw lines loaded | 825 | 777 reading lines + 48 enrollment lines (one per patient) |
+  | Reading lines cleaned | 777 | 737 accepted + 40 rejected |
+  | Rejected | 40 | 31 duplicates + 9 other reasons |
+  | Accepted | 737 | = 737 home points on the timeline |
+
+  The 48-line gap between 777 and 825 is the enrollment roster, which the raw load counts alongside the readings. It isn't a bug.
+- `timeline.bp_reading` combines clean home readings with clinical BP panels (LOINC 85354-9) from 280 days before discharge to the end of monitoring. It holds IDs, codes and values only (D6). On this data that's 737 home and 26 clinical points. Panels missing a component would be skipped and counted.

@@ -4,7 +4,7 @@ PY := $(VENV)/bin/python
 # Editable-install .pth files can get the macOS "hidden" flag, which Python skips.
 export PYTHONPATH := src
 
-.PHONY: setup data explore walkthrough ingest cohort test
+.PHONY: setup data explore walkthrough ingest cohort home test
 
 # One-time setup: virtualenv, dependencies, and the Synthea sample download.
 setup:
@@ -31,6 +31,13 @@ ingest:
 # Phase 3: postpartum cohort (config/cohort.toml). Loads its augmentation bundle via ingest.
 cohort:
 	$(PY) -m ppbp.cohort.build
+
+# Phase 4: simulate home BP readings, load and clean them, build timelines, and reconcile
+# what was injected against what cleaning did (config/home.toml).
+home:
+	$(PY) -m ppbp.home.simulate
+	$(PY) -m ppbp.home.load
+	$(PY) -m ppbp.home.reconcile
 
 test:
 	$(PY) -m pytest -q
