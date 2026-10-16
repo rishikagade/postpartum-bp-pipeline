@@ -218,8 +218,12 @@ PLAN.md wasn't in the repo while Phase 5 was built. This phase was designed from
 
 **What's sourced and what isn't:**
 - The 140/90 threshold is ACOG's (README source 10).
-- **The 4 hours is an assumption.** Several secondary sources attribute "two readings ≥140/90 at least 4 hours apart" to ACOG's 2013 Task Force and Practice Bulletin 222. I couldn't verify it against an ACOG text: PB 222, the 2013 Task Force report and CO 767 are paywalled, and ACOG's free FAQ doesn't mention the interval. So it isn't cited as ACOG's.
-- **2 readings and the 48-hour close are assumptions too.** 48 hours means four scheduled readings in a row without an elevated one.
+- **The 4 hours follows the ACOG diagnostic criterion, as summarized in two papers that are free to read in PMC** (cited in review, README sources 13 and 14). ACOG's own texts (PB 222, the 2013 Task Force report, CO 767) are paywalled and weren't read directly. Each paper was checked:
+  - Khosla et al., *Hypertension* 2021 (PMC8678921), says: "Hypertension during pregnancy is defined as systolic blood pressure (BP) ≥140 mm Hg and/or diastolic BP ≥90 mm Hg on 2 occasions at least 4 hours apart". It cites ACOG Practice Bulletin 222.
+  - Carter et al., *Pregnancy Hypertension* 2017 (PMC5435450), Table 1, quotes the 2013 ACOG Hypertension in Pregnancy Task Force definition: "≥140 mm Hg systolic or ≥90 mm Hg diastolic on two occasions at least 4 hours apart after 20 weeks of gestation". The paper's own study used the older 2002 ACOG criterion (6 hours apart), so only its Table 1 is cited.
+  - Both are NIH public-access manuscripts: free to read, but not open-access licensed.
+  - The criterion is for diagnosing hypertension in pregnancy. Here it's adapted to confirm an elevated episode in postpartum home readings. That's this project's use of it, not an ACOG recommendation for home monitoring.
+- **The 2-reading minimum and the 48-hour close remain assumptions.** 48 hours means four scheduled readings in a row without an elevated one.
 
 **Before (v1) and after (v2), by rule**, on the same 737 readings and 48 patients:
 
@@ -299,3 +303,6 @@ Clinical BP panels from the FHIR store sit on the timeline as context and appear
 ### Carried forward to Phase 5b
 - **Consent gating must report what it holds back.** Under rules v1, the non-consenting patients had **31 alerts** (29 elevated, 2 severe, 4 of the 5 patients). Under v2, the same patients have **6 alerts** (4 elevated, 2 severe, still 4 patients). Phase 5b's report must state how many of these alerts are held back from alerting, by rule, with the reason recorded per alert. It should give the v2 count (expected: all 6), and say how that relates to the 31 from v1.
 - **D15 obligations:** no simulated readings after death (Phase 4, done) and no silence alerts after death (Phase 5, done). Phase 5b doesn't need to change either.
+
+### Carried forward to Phase 7
+- **Unconfirmed elevated readings must be visible on the patient timeline** (decided in review). A reading whose `BP_ELEVATED` outcome is `unconfirmed` (5 readings on this data) must appear on the timeline view, marked "unconfirmed". The point is to show that cutting alerts from 172 to 60 is prioritization, not hidden data. The timeline should also distinguish readings that contributed to an elevated alert, and readings superseded by a severe alert.

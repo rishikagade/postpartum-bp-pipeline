@@ -48,7 +48,7 @@ The alert rules in `config/rules.toml` use ACOG's definitions [[10]]:
 
 A third rule, "no readings for 36+ hours", is this project's own assumption (DECISIONS D25). It has no external source.
 
-Elevated readings raise one alert per patient once there are 2+ readings at least 4 hours apart, and the alert closes after 48 hours without one. Both numbers are assumptions (DECISIONS D26); ACOG's own text on the 4-hour interval couldn't be checked. Severe readings each raise their own alert. On the 48-patient cohort, that change cut alerts from 172 to 60:
+Elevated readings raise one alert per patient once there are 2+ readings at least 4 hours apart. The 4 hours follows the ACOG diagnostic criterion of ≥140/90 on two occasions at least 4 hours apart, as summarized in [[13]] and [[14]]. That criterion is for diagnosis during pregnancy; applying it to postpartum home readings is this project's choice. The 2-reading minimum and the alert closing after 48 hours without an elevated reading are assumptions (DECISIONS D26). Severe readings each raise their own alert. On the 48-patient cohort, that change cut alerts from 172 to 60:
 
 | Rule | Alerts before | Alerts after | Patients before | Patients after |
 |---|---|---|---|---|
@@ -73,7 +73,7 @@ The messiness injected into the readings (dropouts, missed readings, duplicates,
 
 ## Sources
 
-Every link below was checked on 2026-10-15 or 2026-10-16 to confirm it supports the statement that cites it.
+Every link below was checked on 2026-10-15 to confirm it supports the statement that cites it.
 
 1. <a id="s1"></a>Walonoski J, Kramer M, Nichols J, et al. Synthea: An approach, method, and software mechanism for generating synthetic patients and the synthetic electronic health care record. *J Am Med Inform Assoc.* 25(3):230–238. https://doi.org/10.1093/jamia/ocx079
 2. <a id="s2"></a>Synthea source code. https://github.com/synthetichealth/synthea
@@ -88,6 +88,9 @@ Every link below was checked on 2026-10-15 or 2026-10-16 to confirm it supports 
 11. <a id="s11"></a>Janssen MK, Demers S, Srinivas SK, et al. Implementation of a text-based postpartum blood pressure monitoring program at 3 different academic sites. *Am J Obstet Gynecol MFM.* 2021;3(6):100446. https://doi.org/10.1016/j.ajogmf.2021.100446
 12. <a id="s12"></a>Hauspurg A, Lemon LS, Quinn BA, et al. A Postpartum Remote Hypertension Monitoring Protocol Implemented at the Hospital Level. *Obstet Gynecol.* 2019;134(4):685–691. https://doi.org/10.1097/AOG.0000000000003479
 
+13. <a id="s13"></a>Khosla K, Heimberger S, Nieman KM, et al. Long-Term Cardiovascular Disease Risk in Women After Hypertensive Disorders of Pregnancy: Recent Advances in Hypertension. *Hypertension.* 2021;78(4):927–935. Defines hypertension during pregnancy as ≥140 and/or ≥90 mm Hg "on 2 occasions at least 4 hours apart", citing ACOG Practice Bulletin 222. https://pmc.ncbi.nlm.nih.gov/articles/PMC8678921/ (doi:10.1161/HYPERTENSIONAHA.121.16506)
+14. <a id="s14"></a>Carter EB, Conner SN, Cahill AG, et al. Impact of fetal growth on pregnancy outcomes in women with severe preeclampsia. *Pregnancy Hypertens.* 2017;8:21–25. Table 1 quotes the 2013 ACOG Task Force definition: ≥140 or ≥90 mm Hg "on two occasions at least 4 hours apart". https://pmc.ncbi.nlm.nih.gov/articles/PMC5435450/ (doi:10.1016/j.preghy.2017.02.002)
+
 [1]: #s1
 [2]: #s2
 [3]: #s3
@@ -100,3 +103,5 @@ Every link below was checked on 2026-10-15 or 2026-10-16 to confirm it supports 
 [10]: #s10
 [11]: #s11
 [12]: #s12
+[13]: #s13
+[14]: #s14

@@ -35,14 +35,15 @@ diastolic_at_least = 90
 # A reading that meets a more severe rule fires that rule only, and doesn't count here.
 unless_rule = "BP_SEVERE"
 # Raised once an episode has this many elevated readings, the first and latest this many hours
-# apart (the 4 hours is an assumption: see D26).
+# apart. The 4 hours follows the ACOG diagnostic criterion as summarized in README sources 13-14;
+# the 2-reading minimum is an assumption (D26).
 min_readings = 2
 min_hours_apart = 4
 # The alert closes after this long with no elevated reading (assumption, D26). A later elevated
 # reading starts a new episode.
 close_after_hours = 48
 description = "Two or more home readings with systolic >= 140 and/or diastolic >= 90 mm Hg, below the severe range, at least 4 hours apart."
-source = "ACOG FAQ: hypertension in pregnancy is systolic >= 140 and/or diastolic >= 90 (README source 10). The 2-readings, 4-hours-apart and 48-hour close are assumptions (DECISIONS D26)."
+source = "ACOG FAQ: hypertension in pregnancy is systolic >= 140 and/or diastolic >= 90 (README source 10). 4 hours apart follows the ACOG diagnostic criterion as summarized in README sources 13-14. The 2-reading minimum and 48-hour close are assumptions (DECISIONS D26)."
 
 [[rule]]
 id = "DATA_STALE"
