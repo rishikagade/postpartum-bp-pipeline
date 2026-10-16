@@ -4,7 +4,7 @@ PY := $(VENV)/bin/python
 # Editable-install .pth files can get the macOS "hidden" flag, which Python skips.
 export PYTHONPATH := src
 
-.PHONY: setup data explore walkthrough ingest cohort home test
+.PHONY: setup data explore walkthrough ingest cohort home alerts explain test
 
 # One-time setup: virtualenv, dependencies, and the Synthea sample download.
 setup:
@@ -38,6 +38,14 @@ home:
 	$(PY) -m ppbp.home.simulate
 	$(PY) -m ppbp.home.load
 	$(PY) -m ppbp.home.reconcile
+
+# Phase 5: run the alert rules (config/rules.toml) and list open alerts, most urgent first.
+alerts:
+	$(PY) -m ppbp.alerts.evaluate
+
+# Phase 5: trace one alert to its rule version and raw records: make explain ID=ALR-...
+explain:
+	$(PY) -m ppbp.alerts.explain $(ID)
 
 test:
 	$(PY) -m pytest -q

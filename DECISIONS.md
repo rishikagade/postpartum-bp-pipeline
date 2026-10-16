@@ -179,3 +179,123 @@ A reading carries at most one value or unit problem, so each rejection has a sin
 
   The 48-line gap between 777 and 825 is the enrollment roster, which the raw load counts alongside the readings. It isn't a bug.
 - `timeline.bp_reading` combines clean home readings with clinical BP panels (LOINC 85354-9) from 280 days before discharge to the end of monitoring. It holds IDs, codes and values only (D6). On this data that's 737 home and 26 clinical points. Panels missing a component would be skipped and counted.
+
+## Phase 5: Validation rules and alerts
+
+PLAN.md wasn't in the repo while Phase 5 was built. This phase was designed from REQUIREMENTS R4/R5 and the DataTrust notes above, and will be checked against PLAN.md once it's added. `make alerts` runs the rules and lists open alerts. `make explain ID=ALR-...` traces one alert. Counts below are from the pipeline's own output.
+
+### D24. One versioned rules file, with per-record results
+- `config/rules.toml` holds every alert rule. Each rule has its own `version`, and the file has a `version`; changing a threshold means bumping both. Each run records the file's SHA-256 in `alerts.rule_run` and copies the rules as they were into `alerts.rule`. This extends DataTrust, where thresholds live in Python code.
+- **Rule results:** every rule produces a result per record, in DataTrust's result shape but per record rather than per column (`alerts.validation_result`):
+  - each accepted home reading gets one result per reading rule;
+  - each enrolled patient gets one result per silence rule.
+- **Outcomes:** `fired`, `passed`, or `superseded`. `alerts.rule_summary` gives DataTrust's per-rule `affected_count` and `affected_pct`, and a test checks that it agrees with the per-record results.
+- **This run, with rules file v2:** 737 readings and 48 patients produce 1,522 results and 60 alerts. D26 compares this with v1.
+
+| Rule | Severity | Records that fired | Of | Alerts | Patients |
+|---|---|---|---|---|---|
+| `BP_SEVERE` v1: severe-range reading (≥160 and/or ≥110, ACOG, README source 10) | Critical | 11 | 737 readings | 11 | 6 |
+| `BP_ELEVATED` v2: elevated readings, 2+ readings 4+ h apart (≥140 and/or ≥90, below severe, ACOG) | High | 263 | 737 readings | 31 (18 open, 13 closed) | 25 |
+| `DATA_STALE` v1: no readings for 36+ hours | Medium | 18 | 48 patients | 18 | 18 |
+
+### D25. "Gone quiet" means 36 hours without an accepted reading (assumption, accepted in review)
+- **Why 36 hours:** on a twice-daily schedule, 36 hours means two consecutive missed readings. On this data, gaps between consecutive readings have a median of 12.8 h, a 90th percentile of 23.5 h, and a maximum of 47.6 h. A 24-hour threshold would fire on a single missed reading, because of the ±60-minute schedule jitter.
+- **When the clock starts:** at local midnight of postpartum day 1, not at discharge. A late-evening discharge would otherwise look like a silence before the first scheduled reading.
+- **When it stops:** at the end of monitoring, which Phase 4 already caps at `deceased_at`. That fulfils D15's Phase 5 obligation: no silence alert is raised at or after death. A test checks that a death 30 h after the last reading raises nothing, and a death 50 h after raises one alert before the death.
+- **One alert per silence:** at most one alert per silence, triggered when it reaches 36 hours. The summary says whether readings resumed, or whether monitoring ended first. All 14 dropouts are among the 18 patients with a silence alert.
+- **Kept distinct from "normal":** this rule is separate from the BP rules. A silence alert never means the readings were normal.
+
+### D26. Elevated readings: one episode alert per patient. Severe readings: one alert each
+**Changed in review** (rules file v1 → v2, `BP_ELEVATED` v1 → v2). v1 opened an alert for every elevated reading not already within 24 h of an earlier alert's first trigger, giving 143 High alerts for 29 patients. v2:
+
+- **Episodes:** a patient's elevated readings (≥140 and/or ≥90, below severe) form an episode. A reading more than `close_after_hours` (48 h) after the episode's last elevated reading starts a new one.
+- **Raised when confirmed:** an episode raises an alert once it has 2+ elevated readings, with the latest at least 4 h after the first. `triggered_at` is the confirming reading.
+- **Unconfirmed readings:** an episode that never confirms raises nothing, and its readings get the outcome `unconfirmed`. On this data that's 5 readings from 5 patients.
+- **One open alert per patient:** later elevated readings attach to the open alert. Its `updated_at`, evidence and summary grow; the summary gives the reading count, the days covered, the highest systolic, and the day it was confirmed.
+- **Closing:** the alert closes 48 h after the episode's last elevated reading, if that falls before the end of monitoring. `status` becomes `closed` and `closed_at` is set; otherwise it stays `open`. A test checks that a patient never has two open elevated alerts and that a closed one closes before the next opens.
+- **Lineage:** every contributing reading, before and after confirmation, is linked to the alert as evidence (role `trigger`), and its rule result names the alert. On this data, all 263 contributing readings are linked, from 2 to 18 per alert.
+- **Severe readings are unchanged:** each one raises its own Critical alert. A severe reading's `BP_ELEVATED` result is `superseded`, so it neither counts toward nor hides inside an elevated episode. Tests check, with interleaved readings and three different elevated settings, that the severe alerts always match the severe readings exactly. On the real data, the 11 severe alert IDs are identical before and after the change.
+
+**What's sourced and what isn't:**
+- The 140/90 threshold is ACOG's (README source 10).
+- **The 4 hours is an assumption.** Several secondary sources attribute "two readings ≥140/90 at least 4 hours apart" to ACOG's 2013 Task Force and Practice Bulletin 222. I couldn't verify it against an ACOG text: PB 222, the 2013 Task Force report and CO 767 are paywalled, and ACOG's free FAQ doesn't mention the interval. So it isn't cited as ACOG's.
+- **2 readings and the 48-hour close are assumptions too.** 48 hours means four scheduled readings in a row without an elevated one.
+
+**Before (v1) and after (v2), by rule**, on the same 737 readings and 48 patients:
+
+| Rule | Alerts before | Alerts after | Patients before | Patients after |
+|---|---|---|---|---|
+| `BP_SEVERE` (Critical) | 11 | 11 | 6 | 6 |
+| `BP_ELEVATED` (High) | 143 | 31 (18 open, 13 closed) | 29 | 25 |
+| `DATA_STALE` (Medium) | 18 | 18 | 18 | 18 |
+| **Total** | **172** | **60** | **36** | **33** |
+
+Elevated alerts per patient went from a median of 6 (max 8) to a median of 1 (max 2). Four patients lose their only elevated alert (`#32`, `#38`, `#42`, `#11`), because each had one elevated reading that was never confirmed. Their reading still has a rule result (`unconfirmed`) and is on the timeline.
+
+**Before and after, by patient** (alerts as severe / elevated / silence; patients with any alert under either version; IDs shortened to 8 characters):
+
+| Patient | Before | Total | After | Total |
+|---|---|---|---|---|
+| `#43` | 3 / 7 / 0 | 10 | 3 / 1 / 0 | 4 |
+| `#9` | 3 / 7 / 0 | 10 | 3 / 1 / 0 | 4 |
+| `#45` | 2 / 6 / 1 | 9 | 2 / 1 / 1 | 4 |
+| `#1` | 1 / 8 / 0 | 9 | 1 / 1 / 0 | 2 |
+| `#26` | 1 / 8 / 0 | 9 | 1 / 1 / 0 | 2 |
+| `#22` | 1 / 7 / 0 | 8 | 1 / 1 / 0 | 2 |
+| `#48` | 0 / 7 / 1 | 8 | 0 / 1 / 1 | 2 |
+| `#12` | 0 / 7 / 1 | 8 | 0 / 1 / 1 | 2 |
+| `#27` | 0 / 6 / 1 | 7 | 0 / 2 / 1 | 3 |
+| `#28` | 0 / 7 / 0 | 7 | 0 / 1 / 0 | 1 |
+| `#7` | 0 / 7 / 0 | 7 | 0 / 1 / 0 | 1 |
+| `#18` | 0 / 6 / 0 | 6 | 0 / 1 / 0 | 1 |
+| `#19` | 0 / 6 / 0 | 6 | 0 / 2 / 0 | 2 |
+| `#25` | 0 / 6 / 0 | 6 | 0 / 1 / 0 | 1 |
+| `#10` | 0 / 5 / 1 | 6 | 0 / 1 / 1 | 2 |
+| `#34` | 0 / 6 / 0 | 6 | 0 / 2 / 0 | 2 |
+| `#5` | 0 / 6 / 0 | 6 | 0 / 2 / 0 | 2 |
+| `#21` | 0 / 5 / 1 | 6 | 0 / 2 / 1 | 3 |
+| `#24` | 0 / 5 / 0 | 5 | 0 / 1 / 0 | 1 |
+| `#14` | 0 / 4 / 1 | 5 | 0 / 1 / 1 | 2 |
+| `#4` | 0 / 5 / 0 | 5 | 0 / 2 / 0 | 2 |
+| `#46` | 0 / 3 / 1 | 4 | 0 / 1 / 1 | 2 |
+| `#35` | 0 / 2 / 1 | 3 | 0 / 1 / 1 | 2 |
+| `#36` | 0 / 2 / 1 | 3 | 0 / 1 / 1 | 2 |
+| `#11` | 0 / 1 / 1 | 2 | 0 / 0 / 1 | 1 |
+| `#16` | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
+| `#32` | 0 / 1 / 0 | 1 | 0 / 0 / 0 | 0 |
+| `#38` | 0 / 1 / 0 | 1 | 0 / 0 / 0 | 0 |
+| `#37` | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
+| `#29` | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
+| `#42` | 0 / 1 / 0 | 1 | 0 / 0 / 0 | 0 |
+| `#8` | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
+| `#39` | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
+| `#40` | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
+| `#33` | 0 / 1 / 0 | 1 | 0 / 1 / 0 | 1 |
+| `#6` | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
+
+### D27. Only home readings are evaluated
+Clinical BP panels from the FHIR store sit on the timeline as context and appear in `explain_alert`. They don't trigger alerts. Most are from before delivery, and the nurse's job here is the home-monitoring period.
+
+### D28. Alerts are rebuilt per run, with stable ids; status is as of the end of monitoring
+- **Stable ids:** an alert id is a hash of rule, patient and first trigger (or silence start). Re-running gives identical alerts, which a test checks.
+- **Rebuilt per run:** each run rebuilds the alerts tables in one transaction.
+- **No workflow:** there's no acknowledge or resolve step (out of scope). Severe and silence alerts stay `open`. Elevated alerts close by rule after 48 quiet hours (D26). Status is as of the end of each patient's monitoring.
+- **Historical evaluation:** the source dates run from 2000 to 2021, so rules are evaluated after the fact over the whole monitoring window, using `measured_at`. A late reading counts at the time it was measured, not when it arrived. A real-time system would only see it on arrival.
+
+### D29. explain_alert(alert_id) and what it leaves out
+- **What it returns:**
+  - the alert;
+  - the rule, its version, parameters and source, plus the rules file hash for that run;
+  - each evidence record with its rule result;
+  - for each home reading: the cleaned record (including `measured_at_source` and flags), the exact raw line with its SHA-256 (rechecked in tests), and the load and file hash that first brought it in;
+  - the cleaning run and its config hash;
+  - the patient's discharge, monitoring end and death times;
+  - every timeline reading in the 48 hours before the alert.
+- **Identifiers only:** the patient appears only by ID.
+  - A test walks every key in the output and rejects FHIR's identifying fields (D6).
+  - On the real data, none of the 172 explanations contains any of the patient's FHIR name strings.
+- **Consent isn't applied yet.** It's Phase 5b's job (R7); see "Carried forward to Phase 5b" below.
+
+### Carried forward to Phase 5b
+- **Consent gating must report what it holds back.** Under rules v1, the non-consenting patients had **31 alerts** (29 elevated, 2 severe, 4 of the 5 patients). Under v2, the same patients have **6 alerts** (4 elevated, 2 severe, still 4 patients). Phase 5b's report must state how many of these alerts are held back from alerting, by rule, with the reason recorded per alert. It should give the v2 count (expected: all 6), and say how that relates to the 31 from v1.
+- **D15 obligations:** no simulated readings after death (Phase 4, done) and no silence alerts after death (Phase 5, done). Phase 5b doesn't need to change either.

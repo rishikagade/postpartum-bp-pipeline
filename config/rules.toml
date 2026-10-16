@@ -1,0 +1,59 @@
+# Alert rules (DECISIONS D24-D29). One file, versioned. Every rule result and alert records the
+# rule's id and version, and each run records this file's version and SHA-256.
+# Change a rule's logic or threshold -> bump that rule's `version` and this file's `version`.
+version = "2"
+# v2: elevated readings raise one episode alert per patient (2+ readings >= 4 h apart),
+#     closing after 48 h without one; severe readings each raise their own alert (D26).
+
+# Severity order for the nurse's list, most urgent first (DataTrust's severity levels).
+severity_order = ["Critical", "High", "Medium", "Low"]
+
+# Readings shown as context when an alert is explained.
+context_hours = 48
+
+[[rule]]
+id = "BP_SEVERE"
+version = "1"
+name = "Severe-range blood pressure"
+label = "Severe-range reading"
+severity = "Critical"
+kind = "reading_threshold"            # every qualifying reading raises its own alert
+systolic_at_least = 160
+diastolic_at_least = 110
+description = "Home reading with systolic >= 160 mm Hg and/or diastolic >= 110 mm Hg."
+source = "ACOG FAQ: severe hypertension is systolic >= 160 and/or diastolic >= 110 (README source 10)"
+
+[[rule]]
+id = "BP_ELEVATED"
+version = "2"
+name = "Elevated blood pressure"
+label = "Elevated readings"
+severity = "High"
+kind = "persistent_threshold"         # one open alert per patient, fed by an episode of readings
+systolic_at_least = 140
+diastolic_at_least = 90
+# A reading that meets a more severe rule fires that rule only, and doesn't count here.
+unless_rule = "BP_SEVERE"
+# Raised once an episode has this many elevated readings, the first and latest this many hours
+# apart (the 4 hours is an assumption: see D26).
+min_readings = 2
+min_hours_apart = 4
+# The alert closes after this long with no elevated reading (assumption, D26). A later elevated
+# reading starts a new episode.
+close_after_hours = 48
+description = "Two or more home readings with systolic >= 140 and/or diastolic >= 90 mm Hg, below the severe range, at least 4 hours apart."
+source = "ACOG FAQ: hypertension in pregnancy is systolic >= 140 and/or diastolic >= 90 (README source 10). The 2-readings, 4-hours-apart and 48-hour close are assumptions (DECISIONS D26)."
+
+[[rule]]
+id = "DATA_STALE"
+version = "1"
+name = "No recent readings"
+label = "No readings for 36+ hours"
+severity = "Medium"
+kind = "patient_silence"
+# Two consecutive missed readings on a twice-daily schedule (assumption, accepted in review: D25).
+# The clock starts at local midnight of postpartum day 1, and never runs past monitoring end or
+# death (D15).
+hours = 36
+description = "No accepted home reading for 36 hours or more during the monitoring window."
+source = "Assumption (DECISIONS D25)"

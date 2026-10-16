@@ -7,6 +7,7 @@ Schemas:
     cohort    the postpartum cohort (Phase 3): who is in, who is out and why.
     home      cleaned home BP readings and enrollment (Phase 4), plus every rejected line.
     timeline  one BP timeline per cohort patient: home and clinical readings (Phase 4).
+    alerts    rule results per record, alerts, and their evidence (Phase 5).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ CREATE SCHEMA IF NOT EXISTS ops;
 CREATE SCHEMA IF NOT EXISTS cohort;
 CREATE SCHEMA IF NOT EXISTS home;
 CREATE SCHEMA IF NOT EXISTS timeline;
+CREATE SCHEMA IF NOT EXISTS alerts;
 
 CREATE SEQUENCE IF NOT EXISTS ops.load_id_seq START 1;
 
@@ -234,6 +236,88 @@ CREATE TABLE IF NOT EXISTS timeline.bp_reading (
     flags                 VARCHAR[] NOT NULL,
     PRIMARY KEY (source, record_id)
 );
+
+-- Alerting (Phase 5). One row per rule run; the other alerts tables hold the latest run only.
+CREATE SEQUENCE IF NOT EXISTS alerts.run_id_seq START 1;
+
+CREATE TABLE IF NOT EXISTS alerts.rule_run (
+    run_id             INTEGER PRIMARY KEY,
+    run_at             TIMESTAMPTZ NOT NULL,
+    rules_version      VARCHAR NOT NULL,
+    rules_sha256       VARCHAR NOT NULL,
+    clean_id           INTEGER NOT NULL,       -- the home cleaning run evaluated
+    readings_evaluated INTEGER NOT NULL,
+    patients_evaluated INTEGER NOT NULL,
+    results            INTEGER NOT NULL,
+    alerts             INTEGER NOT NULL
+);
+
+-- The rules as they were for this run, copied from config/rules.toml.
+CREATE TABLE IF NOT EXISTS alerts.rule (
+    rule_id      VARCHAR PRIMARY KEY,
+    rule_version VARCHAR NOT NULL,
+    run_id       INTEGER NOT NULL,
+    name         VARCHAR NOT NULL,
+    label        VARCHAR NOT NULL,             -- plain wording for the nurse
+    severity     VARCHAR NOT NULL,
+    kind         VARCHAR NOT NULL,             -- 'reading_threshold' | 'persistent_threshold' | 'patient_silence'
+    params       JSON NOT NULL,                -- thresholds, exactly as configured
+    description  VARCHAR NOT NULL,
+    source       VARCHAR NOT NULL
+);
+
+-- One result per rule per record (DataTrust's rule-result shape, made per record).
+CREATE TABLE IF NOT EXISTS alerts.validation_result (
+    run_id       INTEGER NOT NULL,
+    rule_id      VARCHAR NOT NULL,
+    rule_version VARCHAR NOT NULL,
+    record_type  VARCHAR NOT NULL,             -- 'home_reading' | 'patient'
+    record_id    VARCHAR NOT NULL,             -- home.reading.reading_id, or patient_id
+    patient_id   VARCHAR NOT NULL,
+    outcome      VARCHAR NOT NULL,             -- 'fired' | 'passed' | 'superseded' | 'unconfirmed'
+    observed     VARCHAR NOT NULL,             -- e.g. '172/112 mm Hg', or the longest silence
+    detail       VARCHAR,
+    PRIMARY KEY (rule_id, record_type, record_id)
+);
+
+CREATE TABLE IF NOT EXISTS alerts.alert (
+    alert_id             VARCHAR PRIMARY KEY,  -- stable across re-runs
+    run_id               INTEGER NOT NULL,
+    rule_id              VARCHAR NOT NULL,
+    rule_version         VARCHAR NOT NULL,
+    label                VARCHAR NOT NULL,
+    severity             VARCHAR NOT NULL,
+    severity_rank        INTEGER NOT NULL,     -- 1 = most urgent
+    patient_id           VARCHAR NOT NULL,     -- no other identifying data (R7)
+    triggered_at         TIMESTAMPTZ NOT NULL,  -- when the rule's condition was first met
+    updated_at           TIMESTAMPTZ NOT NULL,  -- latest contributing reading (or = triggered_at)
+    postpartum_day       INTEGER NOT NULL,      -- at triggered_at
+    days_since_discharge DOUBLE NOT NULL,       -- at triggered_at
+    threshold            VARCHAR NOT NULL,      -- what was crossed, in words
+    summary              VARCHAR NOT NULL,
+    status               VARCHAR NOT NULL,      -- 'open' | 'closed', as of the end of monitoring
+    closed_at            TIMESTAMPTZ            -- set when a rule closes the alert (BP_ELEVATED)
+);
+
+CREATE TABLE IF NOT EXISTS alerts.alert_evidence (
+    alert_id    VARCHAR NOT NULL,
+    role        VARCHAR NOT NULL,              -- 'trigger' (every contributing reading) |
+                                               -- 'last_reading_before_silence' | 'silence'
+    record_type VARCHAR NOT NULL,              -- 'home_reading' | 'patient'
+    record_id   VARCHAR NOT NULL,
+    PRIMARY KEY (alert_id, role, record_type, record_id)
+);
+
+-- Per-rule summary in DataTrust's shape: affected count and share of records evaluated.
+CREATE OR REPLACE VIEW alerts.rule_summary AS
+SELECT r.rule_id, r.rule_version, r.name AS rule_name, r.severity,
+       count(*) FILTER (WHERE v.outcome = 'fired') AS affected_count,
+       count(*) AS evaluated_count,
+       round(100.0 * count(*) FILTER (WHERE v.outcome = 'fired') / nullif(count(*), 0), 2) AS affected_pct,
+       r.description
+FROM alerts.rule r
+LEFT JOIN alerts.validation_result v USING (rule_id, rule_version)
+GROUP BY ALL;
 
 -- Every delivery patient not in the cohort, with the reason.
 -- Reasons: died_before_discharge, delivery_encounter_missing, no_hdp_not_augmented.

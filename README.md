@@ -17,6 +17,8 @@ make walkthrough  # Phase 1: one patient's record, in plain language
 make ingest       # Phase 2: load the FHIR bundles into DuckDB; safe to re-run
 make cohort       # Phase 3: build the postpartum cohort (config/cohort.toml)
 make home         # Phase 4: simulate, load and clean home BP readings; build timelines
+make alerts       # Phase 5: run the alert rules (config/rules.toml); list open alerts
+make explain ID=ALR-...  # Phase 5: trace one alert to its rule version and raw records
 ```
 
 The database goes to `data/ppbp.duckdb`. If the project is in an iCloud-synced folder, keep `data/` off iCloud with `mv data data.nosync && ln -s data.nosync data` (DECISIONS D11), or set `PPBP_DB_PATH` to put the database elsewhere.
@@ -40,9 +42,22 @@ The three SNOMED CT codes are all members of HL7's *Hypertensive Disorders of Pr
 
 ## Blood pressure thresholds
 
-The validation rules (Phase 5, not built yet) will use ACOG's definitions [[10]]:
+The alert rules in `config/rules.toml` use ACOG's definitions [[10]]:
 - **Hypertension in pregnancy:** systolic ≥140 mm Hg and/or diastolic ≥90 mm Hg. Gestational hypertension first appears after 20 weeks of pregnancy.
 - **Severe range:** systolic ≥160 mm Hg and/or diastolic ≥110 mm Hg.
+
+A third rule, "no readings for 36+ hours", is this project's own assumption (DECISIONS D25). It has no external source.
+
+Elevated readings raise one alert per patient once there are 2+ readings at least 4 hours apart, and the alert closes after 48 hours without one. Both numbers are assumptions (DECISIONS D26); ACOG's own text on the 4-hour interval couldn't be checked. Severe readings each raise their own alert. On the 48-patient cohort, that change cut alerts from 172 to 60:
+
+| Rule | Alerts before | Alerts after | Patients before | Patients after |
+|---|---|---|---|---|
+| Severe-range reading (Critical) | 11 | 11 | 6 | 6 |
+| Elevated readings (High) | 143 | 31 | 29 | 25 |
+| No readings for 36+ hours (Medium) | 18 | 18 | 18 | 18 |
+| **Total** | **172** | **60** | **36** | **33** |
+
+The per-patient comparison is in DECISIONS D26.
 
 ## Home readings (simulated)
 
