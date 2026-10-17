@@ -7,8 +7,9 @@ Builds a catalogue of identifying values from the restricted zones (FHIR Patient
 Practitioners in raw, contact details in phi). Then it scans everything outside those zones:
     - every table in ops, cohort, home, timeline, alerts and audit
     - every access-layer response, for every alert and every enrolled patient (built without logging)
-    - logs and reports under data/out, including the text of PDFs (which also may not hold study IDs,
-      alert IDs or record references)
+    - logs and reports under data/out, including the text of PDFs, and screenshots (embedded text,
+      plus their visible text when an OCR tool is set in PPBP_OCR). PDFs and images are for people,
+      so they also may not hold study IDs, alert IDs or record references
     - every file git tracks or would commit (not ignored)
 The report gives where each finding is and what kind it is, never the value itself.
 
@@ -32,7 +33,9 @@ import duckdb
 
 from ppbp import DATA_DIR, DB_PATH, PROJECT_ROOT
 from ppbp.alerts.explain import explain_alert
-from ppbp.privacy.access import render_access_log, render_alert_list, render_holds, render_nurse_alert, render_timeline
+from ppbp.privacy.access import (
+    render_access_log, render_alert_list, render_holds, render_load_summary, render_nurse_alert, render_patient_list,
+    render_timeline)
 
 SCANNED_SCHEMAS = ("ops", "cohort", "home", "timeline", "alerts", "audit")
 RESTRICTED = ["schema raw", "schema phi", "data/raw/", "data/generated/", "data/secrets/"]
@@ -161,6 +164,8 @@ def scan_responses(db_path: Path, cat: Catalogue) -> tuple[int, list[Finding]]:
         check(f"engineer: explain_alert {alert_id}", explain_alert(alert_id, db_path), pid)
     for pid in patients:
         check(f"nurse: read_timeline {pid}", render_timeline(pid, db_path), pid)
+    check("nurse: list_patients", render_patient_list(db_path))
+    check("engineer: read_loads", render_load_summary(db_path))
     check("privacy officer: read_holds", render_holds(db_path))
     check("privacy officer: read_access_log", render_access_log(db_path, limit=100_000))
     return scanned, findings
@@ -182,10 +187,45 @@ def pdf_text(path: Path) -> str:
     return meta + "\n" + "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
+def png_text(path: Path) -> str:
+    """A PNG's embedded text chunks, plus the text visible in it when an OCR tool is configured
+    (PPBP_OCR: a program that prints the text it reads in the images it's given, e.g. tools/ocr.swift)."""
+    import os
+    import struct
+    import zlib
+
+    data, chunks, i = path.read_bytes(), [], 8
+    while i + 8 <= len(data):
+        length, kind = struct.unpack(">I4s", data[i:i + 8])
+        body = data[i + 8:i + 8 + length]
+        if kind == b"tEXt":
+            chunks.append(body.replace(b"\0", b" ").decode("latin-1"))
+        elif kind == b"zTXt":
+            key, _, rest = body.partition(b"\0")
+            chunks.append(key.decode("latin-1") + " " + zlib.decompress(rest[1:]).decode("latin-1"))
+        elif kind == b"iTXt":
+            chunks.append(body.replace(b"\0", b" ").decode("utf-8", "replace"))
+        i += 12 + length
+    if ocr := os.environ.get("PPBP_OCR"):
+        chunks.append(subprocess.run([ocr, str(path)], capture_output=True, text=True, check=True).stdout)
+    return "\n".join(chunks)
+
+
+IMAGES = {".png"}
+OCR_USED = {"images": 0, "ocr": None}
+
+
 def text_files(paths: Iterable[Path]) -> Iterable[tuple[Path, str]]:
+    import os
+
     for p in paths:
         try:
-            yield p, pdf_text(p) if p.suffix.lower() == ".pdf" else p.read_text(encoding="utf-8")
+            if p.suffix.lower() in IMAGES:
+                OCR_USED["images"] += 1
+                OCR_USED["ocr"] = bool(os.environ.get("PPBP_OCR"))
+                yield p, png_text(p)
+            else:
+                yield p, pdf_text(p) if p.suffix.lower() == ".pdf" else p.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError, ValueError):
             continue
 
@@ -206,7 +246,7 @@ def scan_files(cat: Catalogue, out_dir: Path, report_path: Path, scan_repo: bool
             else:
                 n_tracked += 1
             kinds = find(text, cat)
-            if path.suffix.lower() == ".pdf":
+            if path.suffix.lower() in {".pdf", *IMAGES}:   # made for people: counts only, no IDs at all
                 for kind, pattern in PDF_FORBIDDEN.items():
                     if n := len(pattern.findall(text)):
                         kinds[kind] += n
@@ -224,13 +264,15 @@ def run(db_path: Path = DB_PATH, out_dir: Path = DATA_DIR / "out", report_path: 
         cat = build_catalogue(con)
         n_rows, table_findings = scan_tables(con, cat)
     n_resp, response_findings = scan_responses(db_path, cat)
+    OCR_USED.update(images=0, ocr=None)
     n_out, n_tracked, file_findings = scan_files(cat, out_dir, report_path, scan_repo)
     findings = table_findings + response_findings + file_findings
     report = {
         "catalogue": {"record_numbers": len(cat.record_numbers), "name_tokens": len(cat.name_tokens),
                       "identifiers_and_phones": len(cat.codes), "names_and_addresses": len(cat.phrases),
                       "birth_dates": len(cat.birth_dates)},
-        "scanned": {"table_rows": n_rows, "access_responses": n_resp, "output_files": n_out, "tracked_files": n_tracked},
+        "scanned": {"table_rows": n_rows, "access_responses": n_resp, "output_files": n_out, "tracked_files": n_tracked,
+                    "images": OCR_USED["images"], "images_ocr": OCR_USED["ocr"]},
         "restricted_not_scanned": RESTRICTED,
         "findings": [f.__dict__ for f in findings],
         "passed": not findings,
@@ -248,6 +290,9 @@ def print_report(r: dict[str, Any]) -> None:
           f"{c['birth_dates']} birth dates")
     print(f"   scanned: {s['table_rows']:,} table rows, {s['access_responses']} access-layer responses, "
           f"{s['output_files']} output files, {s['tracked_files']} tracked files")
+    if s["images"]:
+        how = "visible text (OCR) and metadata" if s["images_ocr"] else "metadata only: set PPBP_OCR to read their text"
+        print(f"   images: {s['images']} ({how})")
     print(f"   restricted, not scanned: {', '.join(r['restricted_not_scanned'])}")
     for f in r["findings"]:
         print(f"   FOUND in {f['target']} {f['location']}: {f['kinds']}")

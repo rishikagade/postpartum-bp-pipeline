@@ -10,7 +10,7 @@ PY := $(VENV)/bin/python
 # Editable-install .pth files can get the macOS "hidden" flag, which Python skips.
 export PYTHONPATH := src
 
-.PHONY: setup data explore walkthrough ingest cohort home alerts explain privacy leak-check leak-check-history report test
+.PHONY: setup data explore walkthrough ingest cohort home alerts explain privacy leak-check leak-check-history report serve test
 
 # One-time setup: virtualenv, dependencies, and the Synthea sample download.
 setup:
@@ -72,6 +72,11 @@ leak-check-history:
 report:
 	$(LOG) -m ppbp.quality.report | tee $(LOGS)/report.log
 	$(MAKE) -s leak-check
+
+# Phase 7: read-only API and viewer on http://127.0.0.1:$(PORT)/ (roles simulated; every read logged).
+PORT ?= 8000
+serve:
+	$(PY) -m ppbp.api.server --port $(PORT)
 
 test:
 	$(PY) -m pytest -q

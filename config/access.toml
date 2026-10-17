@@ -1,15 +1,19 @@
 # Who may do what through the access layer (DECISIONS D32). Roles are simulated: there is no
 # real authentication in scope. Every call is logged to audit.access_log, allowed or not.
-version = "1"
+version = "2"
+# v2 (Phase 7): nurse lists patients (to reach timelines without alerts); engineer reads loads and the quality report; privacy officer reads the leak check
+# and the quality report.
 
 [roles.nurse]
-# Open alerts and their context, patient timelines, and contact details tied to an alert.
-actions = ["list_alerts", "read_alert", "read_timeline", "read_contact"]
+# Open alerts and their context, the patient list and timelines, and contact details tied to an alert.
+actions = ["list_alerts", "read_alert", "list_patients", "read_timeline", "read_contact"]
 
 [roles.engineer]
-# Full lineage for debugging: rule versions, raw lines (redacted), load and file hashes.
-actions = ["list_alerts", "explain_alert"]
+# Full lineage for debugging: rule versions, raw lines (redacted), load and file hashes; per-load
+# counts (what came in, what changed, what was rejected); the data quality report.
+actions = ["list_alerts", "explain_alert", "read_loads", "read_quality_report"]
 
 [roles.privacy_officer]
-# Who read what, and which alerts were held back for consent. No clinical values.
-actions = ["read_access_log", "read_holds"]
+# Who read what, which alerts were held back for consent, the leak check's result, and the data
+# quality report (its held-alert summary is flagged for policy review). No clinical values.
+actions = ["read_access_log", "read_holds", "read_leak_check", "read_quality_report"]

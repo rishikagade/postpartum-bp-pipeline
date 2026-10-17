@@ -15,6 +15,7 @@ so no free text that could hold identifying details reaches the log.
 
 from __future__ import annotations
 
+import json
 import tomllib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -23,11 +24,13 @@ from typing import Any
 
 import duckdb
 
-from ppbp import DB_PATH, PROJECT_ROOT
+from ppbp import DATA_DIR, DB_PATH, PROJECT_ROOT
 from ppbp.alerts.explain import AlertNotFound, explain_alert
 from ppbp.db import connect
 
 ACCESS_PATH = PROJECT_ROOT / "config" / "access.toml"
+QUALITY_REPORT = DATA_DIR / "out" / "reports" / "quality_report.json"
+LEAK_REPORT = DATA_DIR / "out" / "privacy" / "leak_check.json"
 
 
 class AccessDenied(PermissionError):
@@ -93,12 +96,88 @@ def render_timeline(patient_id: str, db_path: Path = DB_PATH) -> dict[str, Any]:
     consent = enrol[0].pop("consent_home_monitoring")
     # Without home-monitoring consent, home readings are withheld from view as well as from alerting (D31).
     sources = ["home", "clinical"] if consent else ["clinical"]
+    # Each reading says what the alert rules made of it, so readings that didn't raise an alert stay
+    # visible: the alert reduction is prioritization, not hidden data (Phase 7 carry-forward, D42).
     points = _rows(db_path, """
-        SELECT source, record_id, measured_at::VARCHAR AS measured_at, postpartum_day, systolic, diastolic, flags
-        FROM timeline.bp_reading WHERE patient_id = ? AND list_contains(?, source)
-        ORDER BY measured_at, record_id""", [patient_id, sources])
+        SELECT t.source, t.record_id, t.measured_at::VARCHAR AS measured_at, t.postpartum_day,
+               t.systolic, t.diastolic, t.flags,
+               CASE WHEN t.source = 'clinical' THEN 'clinical'
+                    WHEN sev.outcome = 'fired' THEN 'severe'
+                    WHEN elv.outcome = 'fired' THEN 'elevated_in_alert'
+                    WHEN elv.outcome = 'unconfirmed' THEN 'elevated_unconfirmed'
+                    ELSE 'normal' END AS mark,
+               coalesce((SELECT list(e.alert_id ORDER BY e.alert_id) FROM alerts.alert_evidence e
+                         JOIN alerts.alert a USING (alert_id)
+                         WHERE e.record_id = t.record_id AND e.role = 'trigger' AND a.status <> 'held_back'),
+                        []) AS alert_ids
+        FROM timeline.bp_reading t
+        LEFT JOIN alerts.validation_result sev ON sev.rule_id = 'BP_SEVERE' AND sev.record_id = t.record_id
+        LEFT JOIN alerts.validation_result elv ON elv.rule_id = 'BP_ELEVATED' AND elv.record_id = t.record_id
+        WHERE t.patient_id = ? AND list_contains(?, t.source)
+        ORDER BY t.measured_at, t.record_id""", [patient_id, sources])
+    for p in points:
+        p["mark_label"] = MARK_LABELS[p["mark"]]
     return {"patient": enrol[0], "home_readings_withheld": None if consent else "no_home_monitoring_consent",
             "readings": points}
+
+
+MARK_LABELS = {
+    "severe": "Severe range: raised its own alert",
+    "elevated_in_alert": "Elevated: part of an elevated-readings alert",
+    "elevated_unconfirmed": "Elevated, unconfirmed: no second elevated reading 4+ hours apart, so no alert",
+    "normal": "Below the alert thresholds",
+    "clinical": "Clinic reading (context only, not evaluated by the alert rules)",
+}
+
+
+def render_patient_list(db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    """Every enrolled patient, by study ID and enrollment number, with counts only. Lets a nurse reach a
+    timeline whose readings raised no alert, e.g. an unconfirmed elevated reading (D42)."""
+    return _rows(db_path, """
+        SELECT e.patient_id, e.enrollment_no, e.discharge_at::VARCHAR AS discharge_at,
+               e.consent_home_monitoring AS home_monitoring_consent,
+               (SELECT count(*) FROM home.reading r WHERE r.patient_id = e.patient_id) AS home_readings,
+               (SELECT count(*) FROM alerts.alert a WHERE a.patient_id = e.patient_id AND a.status = 'open') AS open_alerts,
+               (SELECT count(*) FROM alerts.validation_result v WHERE v.patient_id = e.patient_id
+                  AND v.rule_id = 'BP_ELEVATED' AND v.outcome = 'unconfirmed') AS unconfirmed_elevated
+        FROM home.enrollment e ORDER BY e.enrollment_no""")
+
+
+def render_load_summary(db_path: Path = DB_PATH, recent: int = 10) -> dict[str, Any]:
+    """What came in, what changed, what was rejected and why: per load, counts only (R2).
+    File names are left out: Synthea's carry patient names (D33)."""
+    loads = _rows(db_path, """
+        SELECT load_id, kind, started_at::VARCHAR AS started_at, status, files_in, records_in, new, changed,
+               unchanged, rejected, error
+        FROM ops.load_run ORDER BY load_id DESC LIMIT ?""", [recent])
+    fhir_reasons = {r["load_id"]: r["reasons"] for r in _rows(db_path, """
+        SELECT load_id, map_from_entries(list(struct_pack(k := reason, v := n))) AS reasons
+        FROM (SELECT load_id, reason, count(*) n FROM raw.load_rejection GROUP BY ALL) GROUP BY 1""")}
+    latest_clean = _rows(db_path, """SELECT clean_id, raw_load_id, lines_in, accepted, rejected, duplicates
+                                     FROM home.clean_run ORDER BY clean_id DESC LIMIT 1""")
+    home_reasons = {r["reason"]: r["n"] for r in _rows(db_path, """
+        SELECT reason, count(*) n FROM home.reading_rejection GROUP BY 1 ORDER BY 2 DESC""")}
+    for load in loads:
+        load["rejected_by_reason"] = fhir_reasons.get(load["load_id"], {}) if load["kind"] == "fhir" else (
+            home_reasons if latest_clean and load["load_id"] == latest_clean[0]["raw_load_id"] else None)
+    return {"loads": loads, "latest_home_cleaning": latest_clean[0] if latest_clean else None,
+            "note": "Home loads are cleaned after loading: rejections and duplicates removed are given for the "
+                    "load the latest cleaning run used. Source file names are not shown (they can identify "
+                    "patients)."}
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise NotFound(str(path.name))
+    return json.loads(path.read_text())
+
+
+def render_quality_report(path: Path = QUALITY_REPORT) -> dict[str, Any]:
+    return _read_json(path)
+
+
+def render_leak_check(path: Path = LEAK_REPORT) -> dict[str, Any]:
+    return _read_json(path)
 
 
 def hold_summary(db_path: Path = DB_PATH) -> dict[str, Any]:
@@ -134,11 +213,13 @@ def render_access_log(db_path: Path = DB_PATH, limit: int = 500) -> list[dict[st
 
 
 class AccessLayer:
-    def __init__(self, actor: Actor, db_path: Path = DB_PATH, policy_path: Path = ACCESS_PATH) -> None:
+    def __init__(self, actor: Actor, db_path: Path = DB_PATH, policy_path: Path = ACCESS_PATH,
+                 quality_report: Path = QUALITY_REPORT, leak_report: Path = LEAK_REPORT) -> None:
         policy = load_policy(policy_path)
         if actor.role not in policy:
             raise ValueError(f"Unknown role {actor.role!r}")
         self.actor, self.db_path, self.actions = actor, db_path, policy[actor.role]
+        self.quality_report, self.leak_report = quality_report, leak_report
 
     def _log(self, action: str, resource_type: str, resource_id: str | None, patient_id: str | None,
              outcome: str, reason: str | None = None) -> None:
@@ -161,6 +242,15 @@ class AccessLayer:
         self._guard("list_alerts", "alert_list")
         out = render_alert_list(self.db_path)
         self._log("list_alerts", "alert_list", None, None, "allowed", f"{len(out)} alerts returned")
+        return out
+
+    def list_patients(self) -> list[dict[str, Any]]:
+        self._guard("list_patients", "patient_list")
+        out = render_patient_list(self.db_path)
+        for p in out:
+            if not p["home_monitoring_consent"]:   # counts of withheld readings would reveal them (D31)
+                p["home_readings"] = p["unconfirmed_elevated"] = None
+        self._log("list_patients", "patient_list", None, None, "allowed", f"{len(out)} patients")
         return out
 
     def read_alert(self, alert_id: str) -> dict[str, Any]:
@@ -218,6 +308,32 @@ class AccessLayer:
         self._guard("read_access_log", "access_log")
         out = render_access_log(self.db_path, limit)   # read before this call is logged
         self._log("read_access_log", "access_log", None, None, "allowed", f"{len(out)} entries returned")
+        return out
+
+    def read_loads(self) -> dict[str, Any]:
+        self._guard("read_loads", "load_summary")
+        out = render_load_summary(self.db_path)
+        self._log("read_loads", "load_summary", None, None, "allowed", f"{len(out['loads'])} loads")
+        return out
+
+    def read_quality_report(self) -> dict[str, Any]:
+        self._guard("read_quality_report", "quality_report")
+        try:
+            out = render_quality_report(self.quality_report)
+        except NotFound:
+            self._log("read_quality_report", "quality_report", None, None, "not_found")
+            raise
+        self._log("read_quality_report", "quality_report", str(out["quality_run"]["run_id"]), None, "allowed")
+        return out
+
+    def read_leak_check(self) -> dict[str, Any]:
+        self._guard("read_leak_check", "leak_check")
+        try:
+            out = render_leak_check(self.leak_report)
+        except NotFound:
+            self._log("read_leak_check", "leak_check", None, None, "not_found")
+            raise
+        self._log("read_leak_check", "leak_check", None, None, "allowed", "passed" if out["passed"] else "FAILED")
         return out
 
     def read_holds(self) -> list[dict[str, Any]]:

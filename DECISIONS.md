@@ -305,7 +305,7 @@ Clinical BP panels from the FHIR store sit on the timeline as context and appear
 - **D15 obligations:** no simulated readings after death (Phase 4, done) and no silence alerts after death (Phase 5, done). Phase 5b doesn't need to change either.
 
 ### Carried forward to Phase 7
-- **Unconfirmed elevated readings must be visible on the patient timeline** (decided in review). A reading whose `BP_ELEVATED` outcome is `unconfirmed` (5 readings on this data) must appear on the timeline view, marked "unconfirmed". The point is to show that cutting alerts from 172 to 60 is prioritization, not hidden data. The timeline should also distinguish readings that contributed to an elevated alert, and readings superseded by a severe alert.
+- **Unconfirmed elevated readings must be visible on the patient timeline** (decided in review). A reading whose `BP_ELEVATED` outcome is `unconfirmed` (5 readings on this data) must appear on the timeline view, marked "unconfirmed". The point is to show that cutting alerts from 172 to 60 is prioritization, not hidden data. The timeline should also distinguish readings that contributed to an elevated alert, and readings superseded by a severe alert. *(Done in Phase 7, D42.)*
 
 ## Phase 5b: Privacy
 
@@ -462,3 +462,92 @@ Read from `backend/app/services/scoring.py` in DataTrust AI.
 - **Every stage adds up:** both EHR sources, the cohort, home export lines, cleaning, rejections and timeline points.
 - **Clean checks:** 10 of the 19 quality rules found nothing.
 - **`POLICY_REVIEW`:** 2 severe-range alerts held back for lack of consent (D31).
+
+## Phase 7: Read-only API and viewer
+
+PLAN.md still isn't in the repo. Phase 7 follows REQUIREMENTS R8, the three users, and the carry-forwards above. `make serve` starts the API and viewer on http://127.0.0.1:8000/ (`make serve PORT=...` to change the port).
+
+### D40. A small read-only API on Python's standard library
+- **Stack:** `ppbp.api.server` uses `http.server`, so there are no new dependencies.
+- **GET only:** any other method returns 405.
+- **One access path:** every `/api` call is a single access-layer call (D32). Role checks and the access log can't be bypassed, and the leak check inspects the same `render_*` functions the API serves.
+- **Localhost, one request at a time:** it listens on 127.0.0.1 only and handles one request at a time. DuckDB allows one writer per file, and every read writes to the access log. *(A real deployment would need a proper server and database. Out of scope.)*
+- **Simulated roles:** a caller names a role and actor in the `X-PPBP-Role` and `X-PPBP-Actor` headers. Without a known role it gets 401, which isn't logged because there's no actor. Real authentication is out of scope (REQUIREMENTS).
+- **Every response carries the banner** "Synthetic data. Not for clinical use.", in the JSON body and an `X-PPBP-Banner` header.
+- **Security headers:** `Cache-Control: no-store`, `nosniff`, `no-referrer`, and a Content-Security-Policy that allows only the page's own files and forbids framing.
+
+### D41. Roles and endpoints (access policy v2)
+| Endpoint | Action | Nurse | Engineer | Privacy officer |
+|---|---|---|---|---|
+| `/api/alerts` | list_alerts | yes | yes | |
+| `/api/alerts/{id}` | read_alert | yes | | |
+| `/api/alerts/{id}/explain` | explain_alert | | yes | |
+| `/api/patients` | list_patients | yes | | |
+| `/api/patients/{id}/timeline` | read_timeline | yes | | |
+| `/api/patients/{id}/contact?alert_id=` | read_contact | yes | | |
+| `/api/loads` | read_loads | | yes | |
+| `/api/quality` | read_quality_report | | yes | yes |
+| `/api/access-log` | read_access_log | | | yes |
+| `/api/holds` | read_holds | | | yes |
+| `/api/leak-check` | read_leak_check | | | yes |
+
+- **New in v2:**
+  - **`list_patients` (nurse):** see D42.
+  - **`read_loads` (engineer):** the per-load "what came in, what changed, what was rejected and why" from R2. It shows counts and rejection reasons, and duplicates removed come from the latest cleaning run. Source file names are left out because they can identify patients (D33).
+  - **`read_quality_report` (engineer and privacy officer):** the latter for the held-alert policy flag.
+  - **`read_leak_check` (privacy officer).**
+- **Logging:** every call, allowed, denied or not found, is logged. A test calls every endpoint as every role and checks the HTTP status and the access log against the policy, call for call.
+
+### D42. Every reading is visible and marked, including those that raised no alert (Phase 7 carry-forward)
+- **Marks:** each timeline reading carries a `mark` and a plain `mark_label`:
+  - `severe`: raised its own alert;
+  - `elevated_in_alert`: part of an elevated-readings alert;
+  - `elevated_unconfirmed`: no second elevated reading 4+ hours apart, so no alert;
+  - `normal`: below the thresholds;
+  - `clinical`: a clinic reading, context only.
+
+  Severe and in-alert readings also carry the IDs of their alerts. The viewer charts each mark in its own colour, and draws unconfirmed and clinical readings hollow.
+- **Patient list:** building the viewer showed that **3 of the 5 patients with an unconfirmed elevated reading have no alert at all.** With only an alert list, a nurse could never reach their timelines, so the reduction would effectively hide those readings. A nurse can now list every enrolled patient (`list_patients`, logged) and open any timeline. The list shows the study ID, the enrollment number, and counts of home readings, open alerts and unconfirmed elevated readings.
+- **No-consent patients:** their reading counts show as withheld, consistent with their timelines (D31).
+
+### D43. The viewer: three role views, no external code, text-only rendering
+- **The page:** one HTML page, a stylesheet and a script, served by the API. There are no external libraries, no inline scripts or styles (enforced by the CSP), and every value is inserted as text, never as HTML (a test checks the script for `innerHTML`-style calls).
+- **The banner** "Synthetic data. Not for clinical use." sits at the top, sticky, and at the foot of every screen.
+- **What each role sees:**
+  - **Nurse:** open alerts, most urgent first, then closed ones. Held-back alerts never appear.
+    - **Alert detail:** the threshold crossed, days since discharge, the readings behind the alert, a chart of the monitoring window with the 140/90 and 160/110 lines, and every reading with its mark.
+    - **Silence alerts** say plainly that no readings is not the same as normal readings.
+    - **Contact details** are a separate button. The lookup is logged with the alert as its purpose.
+    - **Patients tab:** every enrolled patient's timeline.
+  - **Engineer:** recent loads, the data quality report, and full alert lineage.
+  - **Privacy officer:** held alerts with the policy-review flag, the access log, the leak check, and the data quality report.
+- **Checked in a real browser:** headless Chrome via `playwright-core` 1.55.0, installed outside the repo for the check only, drove all three roles. There were no console errors once a 204 response for `/favicon.ico` was added.
+- **Port:** port 8000 was taken by an unrelated local server during that check, so the port is now configurable.
+
+### D44. What Phase 7 doesn't do
+- **No real authentication:** roles are simulated, as the scope says.
+- **No workflow:** there's no acknowledging or resolving alerts, and no notifications.
+- **One request at a time** (D40).
+- **Accessibility:** the viewer uses semantic tables and labels, but hasn't had an accessibility audit.
+- **After-the-fact data:** alerts are evaluated over historical, synthetic data (D28), so "open" means open at the end of monitoring, not now.
+
+### D45. Deviation from the plan: the viewer is plain HTML, CSS and JavaScript, not React + TypeScript + Tailwind (accepted in review)
+- **The plan:** PLAN.md specified React, TypeScript and Tailwind for the viewer.
+- **What was built:** one HTML page, one stylesheet and one plain JavaScript file (about 300 lines), served by the Python API.
+- **Why:**
+  - **No build step and no Node dependencies:** the whole project runs from one Python environment, `make serve` is the only step, and there's no JavaScript build to pin, audit or keep working.
+  - **A strict Content-Security-Policy is easy:** only the page's own files are allowed, with no inline scripts or styles, and data is inserted as text only.
+  - **The viewer is small:** three role views, tables, and one SVG chart.
+- **Cost:**
+  - **No component model or type checking:** a bigger UI would want them.
+  - **Different from the plan:** a reader expecting the planned stack won't find it.
+  - **A real port would mean a rewrite:** porting to React + TypeScript + Tailwind would need a build step, and the API wouldn't change.
+
+### D46. README screenshots, with IDs masked and leak-checked as images
+- **What's saved:** the main screen of each role, plus the nurse's view of an unconfirmed reading, are in `docs/screenshots/`.
+- **How they're made:** `tools/screenshots.mjs` drives the installed Google Chrome headless, with `playwright-core` 1.55.0 installed outside the repo. Before each capture it masks study IDs and alert IDs on screen (`SID-••••••`). They're pseudonymous, and they also differ with each environment's key (D30). The captures had no browser console errors.
+- **Images are for people,** so the leak check treats them like the PDF: counts only, no study IDs, alert IDs or record references, on top of the usual catalogue.
+  - **What it reads:** a PNG's embedded text, plus its **visible text** when an OCR tool is set in `PPBP_OCR`. `tools/ocr.swift` uses Apple's Vision framework (macOS).
+  - **Without OCR:** only metadata is checked, and the report says so (`images_ocr`).
+- **On this data:** with OCR, all 4 screenshots pass. Proof that it catches IDs: an earlier unmasked screenshot of the privacy officer's held alerts fails, with 5 study IDs and 6 alert IDs read from the image. A portable test (no OCR needed) plants a study ID in a PNG's metadata and checks it's caught.
+- **What's visible:** the screenshots show synthetic service dates and enrollment numbers. Dates are the documented limitation in D30.

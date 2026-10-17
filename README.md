@@ -21,6 +21,7 @@ make alerts       # Phase 5: run the alert rules (config/rules.toml); list open 
 make explain ID=ALR-...  # Phase 5: trace one alert to its rule version and raw records
 make privacy      # Phase 5b: rebuild the restricted contact table, then run the leak check
 make report       # Phase 6: data quality score and report (JSON + PDF), then the leak check
+make serve        # Phase 7: read-only API and viewer on http://127.0.0.1:8000/ (PORT=... to change)
 ```
 
 The database goes to `data/ppbp.duckdb`. If the project is in an iCloud-synced folder, keep `data/` off iCloud with `mv data data.nosync && ln -s data.nosync data` (DECISIONS D11), or set `PPBP_DB_PATH` to put the database elsewhere.
@@ -92,6 +93,20 @@ The messiness injected into the readings (dropouts, missed readings, duplicates,
 - **This run:** the score is **99.02 / 100**.
 - **Silences are reported separately:** patients who went 36+ hours without a reading (18 of 48 here) appear in the report as a completeness figure, and aren't scored. That check also raises clinical alerts, and alerts are never scored (D35, D39).
 - **No identifiers:** the PDF holds counts only, and the leak check reads it (D38).
+
+## Viewer and API
+
+`make serve` starts a read-only API and a viewer at http://127.0.0.1:8000/. Pick a role at the top; roles are simulated, with no real sign-in. "Synthetic data. Not for clinical use." is on every screen and in every API response.
+
+- **Care nurse:**
+  - open alerts, most urgent first;
+  - each alert's threshold, the readings behind it, days since discharge, and recent readings on a chart;
+  - every patient's timeline, where each reading is marked with what the alert rules made of it, including elevated readings that weren't confirmed and so raised no alert;
+  - a separate contact lookup, logged with the alert it's for.
+- **Data engineer:** what each load brought in, changed and rejected; the data quality report; and an alert's full lineage down to its redacted raw lines.
+- **Privacy officer:** the access log, alerts held back for consent (with the policy-review flag), and the leak check.
+
+Every request goes through the access layer, which checks the role and logs the read (DECISIONS D40-D43).
 
 ## Limitations
 

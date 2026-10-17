@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Postpartum BP viewer</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="banner" role="note">Synthetic data. Not for clinical use.</div>
+  <header class="top">
+    <h1>Postpartum blood pressure monitoring</h1>
+    <form id="who" class="who">
+      <label>Role
+        <select id="role" name="role">
+          <option value="nurse">Care nurse</option>
+          <option value="engineer">Data engineer</option>
+          <option value="privacy_officer">Privacy officer</option>
+        </select>
+      </label>
+      <label>Signed in as <input id="actor" name="actor" value="nurse.1" autocomplete="off" maxlength="40"></label>
+      <button type="submit">Switch</button>
+      <span class="hint">Roles are simulated. Every read is logged.</span>
+    </form>
+  </header>
+  <nav id="tabs" class="tabs" aria-label="Views"></nav>
+  <main id="view" class="view" aria-live="polite"></main>
+  <footer class="banner footer">Synthetic data. Not for clinical use. Patients are shown by study ID only.</footer>
+</body>
+</html>
