@@ -7,7 +7,8 @@ Builds a catalogue of identifying values from the restricted zones (FHIR Patient
 Practitioners in raw, contact details in phi). Then it scans everything outside those zones:
     - every table in ops, cohort, home, timeline, alerts and audit
     - every access-layer response, for every alert and every enrolled patient (built without logging)
-    - logs and reports under data/out
+    - logs and reports under data/out, including the text of PDFs (which also may not hold study IDs,
+      alert IDs or record references)
     - every file git tracks or would commit (not ignored)
 The report gives where each finding is and what kind it is, never the value itself.
 
@@ -165,11 +166,27 @@ def scan_responses(db_path: Path, cat: Catalogue) -> tuple[int, list[Finding]]:
     return scanned, findings
 
 
+# Reports for people (PDFs) carry counts only, so they may not hold even pseudonymous IDs (D38).
+PDF_FORBIDDEN = {
+    "study_id": re.compile(r"SID-[0-9a-f]{12}"),
+    "alert_id": re.compile(r"ALR-[0-9a-f]{12}"),
+    "record_reference": re.compile(r"\.jsonl#\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"),
+}
+
+
+def pdf_text(path: Path) -> str:
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(path))
+    meta = " ".join(str(v) for v in (reader.metadata or {}).values())
+    return meta + "\n" + "\n".join(page.extract_text() or "" for page in reader.pages)
+
+
 def text_files(paths: Iterable[Path]) -> Iterable[tuple[Path, str]]:
     for p in paths:
         try:
-            yield p, p.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
+            yield p, pdf_text(p) if p.suffix.lower() == ".pdf" else p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError, ValueError):
             continue
 
 
@@ -189,6 +206,10 @@ def scan_files(cat: Catalogue, out_dir: Path, report_path: Path, scan_repo: bool
             else:
                 n_tracked += 1
             kinds = find(text, cat)
+            if path.suffix.lower() == ".pdf":
+                for kind, pattern in PDF_FORBIDDEN.items():
+                    if n := len(pattern.findall(text)):
+                        kinds[kind] += n
             if kinds:
                 where = path.relative_to(PROJECT_ROOT) if path.is_relative_to(PROJECT_ROOT) else path
                 findings.append(Finding(target, str(where), dict(kinds)))

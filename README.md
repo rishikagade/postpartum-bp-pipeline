@@ -20,6 +20,7 @@ make home         # Phase 4: simulate, load and clean home BP readings; build ti
 make alerts       # Phase 5: run the alert rules (config/rules.toml); list open alerts
 make explain ID=ALR-...  # Phase 5: trace one alert to its rule version and raw records
 make privacy      # Phase 5b: rebuild the restricted contact table, then run the leak check
+make report       # Phase 6: data quality score and report (JSON + PDF), then the leak check
 ```
 
 The database goes to `data/ppbp.duckdb`. If the project is in an iCloud-synced folder, keep `data/` off iCloud with `mv data data.nosync && ln -s data.nosync data` (DECISIONS D11), or set `PPBP_DB_PATH` to put the database elsewhere.
@@ -72,6 +73,25 @@ The messiness injected into the readings (dropouts, missed readings, duplicates,
 - **Consent:** alerts for patients without home-monitoring consent are held back from the nurse's list, with the reason recorded per alert. On this cohort that's 6 of 60 alerts (D31).
 - **Access:** every read of an alert, timeline or contact detail goes through an access layer. It checks the role's permissions (`config/access.toml`) and logs who read what and when, including denied attempts (D32).
 - **Leak check:** `make leak-check` scans every table, log, report, access-layer response and tracked file for record numbers, names, phones, identifiers, addresses and birth dates. It fails if any are found (D33).
+
+## Data quality report
+
+`make report` writes `data/out/reports/quality_report.json` and `quality_report.pdf`.
+
+- **What it covers:**
+  - records in and out at each stage, checked to add up;
+  - rejections by reason;
+  - validation pass rates;
+  - alerts by severity;
+  - completeness: patients with 36+ hours without a reading (reported, not scored);
+  - alerts held back for consent;
+  - the native and augmented cohort.
+
+  Each section opens with a plain-language "what this means".
+- **The score is a data quality measure for this pipeline. It is not a clinical or patient-safety measure.** It uses the weights and severity multipliers from the author's DataTrust AI project. Every deduction names the checks, and the flagged records, behind it. Clinical alerts are reported but never scored (DECISIONS D35-D37).
+- **This run:** the score is **99.02 / 100**.
+- **Silences are reported separately:** patients who went 36+ hours without a reading (18 of 48 here) appear in the report as a completeness figure, and aren't scored. That check also raises clinical alerts, and alerts are never scored (D35, D39).
+- **No identifiers:** the PDF holds counts only, and the leak check reads it (D38).
 
 ## Limitations
 

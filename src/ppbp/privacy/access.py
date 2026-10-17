@@ -105,7 +105,7 @@ def hold_summary(db_path: Path = DB_PATH) -> dict[str, Any]:
     """Counts of held-back alerts, with no patient details. Held severe-range alerts are flagged
     for policy review: a real service needs a safety escalation path for them (D31)."""
     rows = _rows(db_path, """
-        SELECT a.rule_id, a.severity, h.reason, count(*) AS alerts
+        SELECT a.rule_id, a.label, a.severity, h.reason, count(*) AS alerts
         FROM alerts.alert_hold h JOIN alerts.alert a USING (alert_id) GROUP BY ALL ORDER BY 1""")
     held_severe = sum(r["alerts"] for r in rows if r["severity"] == "Critical")
     review = ([{"flag": "POLICY_REVIEW", "issue": "severe-range alerts held back for lack of home-monitoring consent",

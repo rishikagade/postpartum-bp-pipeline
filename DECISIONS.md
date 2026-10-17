@@ -386,4 +386,79 @@ PLAN.md wasn't in the repo while Phase 5b was built either. It was designed from
 - **Clinical dates stay** (see D30).
 
 ### Carried forward to Phase 6
-- **Held severe alerts in the quality report:** the per-load quality report must include the held-back alert summary from `ppbp.privacy.access.hold_summary` (counts only, no patient details), with held severe-range alerts flagged `POLICY_REVIEW` (D31).
+- **Held severe alerts in the quality report:** the per-load quality report must include the held-back alert summary from `ppbp.privacy.access.hold_summary` (counts only, no patient details), with held severe-range alerts flagged `POLICY_REVIEW` (D31). *(Done in Phase 6: the report's "Alerts held back for consent" section, D38.)*
+
+## Phase 6: Data quality report
+
+PLAN.md still isn't in the repo. Phase 6 follows the Phase 6 brief from review, and the DataTrust notes at the top of this file. `make report` scores the latest run, writes `data/out/reports/quality_report.json` and `quality_report.pdf`, then runs the leak check. Every number below comes from the pipeline's own output.
+
+### D35. The score measures this pipeline's data, not patients
+- **What it says:** the score says how complete, consistent and well-formed the data is. It is **not a clinical or patient-safety measure**, and the report says so in a boxed label at the top, in its JSON (`label`), and in the footer of every PDF page.
+- **Clinical alerts are reported, never scored.** Severe and elevated readings describe patients, not data. A test lowers the severe threshold to 120 (more than doubling severe alerts) and checks that the score doesn't move.
+- **Silences aren't scored either** (changed in review). The "no readings for 36+ hours" check also raises clinical alerts (`DATA_STALE`), so scoring it broke the rule that alerts are reported, not scored. The report shows it instead as a separate completeness figure, "Completeness: patients with 36+ hours without a reading", with its own "what this means". A test shortens the silence limit, which flags more patients, and checks the score doesn't move. Removing it raised the score from 95.27 to 99.02 (D39).
+
+### D36. DataTrust AI's weights and multipliers, kept; one aggregation changed
+Read from `backend/app/services/scoring.py` in DataTrust AI.
+- **Kept unchanged:**
+  - **Component weights:** missing values 25, duplicates 20, invalid type 20, outliers 10, critical failures 15, business rules 10.
+  - **Severity multipliers:** Critical 3, High 2, Medium 1, Low 0.5.
+  - **The formula:** score = 100 - sum(weight x penalty / 100).
+  - **Each component's aggregation:**
+    - missing values takes the worst affected %, with no multiplier, as DataTrust does;
+    - invalid type and outliers take the worst affected % x multiplier;
+    - business rules sum affected % x multiplier, capped at 100;
+    - critical failures sum every Critical rule's affected % x 3, capped at 70.
+  - **The double count:** a Critical rule counts both in its own component and in critical failures, as in DataTrust. A test covers this.
+- **Changed:** duplicates. DataTrust scores only its single duplicate rule. This pipeline has several, so the component takes the worst affected % x multiplier, the same as invalid type.
+- **Added:** the 19 quality rules in `config/quality.toml` (config v2), each mapped to a component and a severity:
+  - **Rejections from cleaning or loading:** each maps to its natural component. Impossible values are outliers (High). Unknown units are invalid type (High), because the value can't be interpreted. Missing fields are missing values.
+  - **Corrected time zones and kPa readings:** invalid type at Low severity. They were repaired, like DataTrust's `date_format_validation`, but still say something about the source.
+  - **Late arrivals:** business rules, like DataTrust's `freshness` (Low). An earlier draft also scored silences here, as Medium; removed in review (D35).
+  - **Readings for an unknown patient, or dated after death:** Critical. Either would mean records are attached to the wrong person.
+  - **A failed latest load:** feeds critical failures directly.
+  - These severities are judgment calls *(assumption, accepted in review)*.
+
+### D37. Per-record results behind every deduction
+- **Per record:** each rule writes one row per flagged record to `quality.rule_result`. Records are identified by home reading ID, study ID, Observation ID, or a hashed FHIR file reference, because file names are identifying (D33).
+- **Per rule:** `quality.rule_summary` holds DataTrust's rule-result shape (`evaluated`, `affected`, `affected_pct`).
+- **Per component:** each deduction lists every rule result that fed it, with a `counted` flag. For "worst of" components only the worst counts, as in DataTrust. Tests check that each counted rule's `affected` equals its per-record rows.
+- **What each rule is measured against:** home lines (777), EHR entries (410,010), delivery patients (84), clinical panels (26), or the latest load of each source (2).
+- **A bug found while building:** the first draft scored only the most recent FHIR load. That is the 37-record augmentation bundle, which `make cohort` reloads every time. The report now covers the latest load of *each* FHIR source: the Synthea bundles and the augmentation bundle.
+  - **The first fix still had a gap:** it told the sources apart by file path (`data/raw/`), and quietly fell back to the bug when the bundles lived elsewhere. The regression test added in review caught this.
+  - **Now:** augmentation loads are the ones the cohort builds recorded (`cohort.build_run.augmentation_load_id`), and the latest other FHIR load is the Synthea one.
+  - **The test** reloads the augmentation bundle after the Synthea load, and checks that the score still covers both loads and that both appear in the report.
+- **Clinical panels:** to make them scorable per record, Phase 4's cleaning now records skipped clinical panels in `timeline.skipped_panel`. Previously they were only counted on screen.
+
+### D38. The report: seven sections, plain-language summaries, no identifiers in the PDF
+- **Seven sections**, each with a one-line "what this means" for a clinical or operations lead, and the tables its numbers came from:
+  1. records in and out at each stage;
+  2. rejections by reason;
+  3. validation pass rates;
+  4. alerts by severity;
+  5. completeness: patients with 36+ hours without a reading (reported, not scored, D35);
+  6. alerts held back for consent, with held severe alerts flagged `POLICY_REVIEW`;
+  7. the native and augmented cohort.
+- **Adding up:** "records in and out" reuses the Phase 4 count chain, from the parts the pipeline can see. Each step is checked to add up, and the report fails if one doesn't.
+  - The simulator's own counts (missed readings, dropouts) come from its answer key, which a real pipeline wouldn't have, so they aren't used.
+  - Instead, the report compares readings the **protocol asked for** with readings received. The protocol count comes from enrollment and the protocol settings: 2 a day for 10 days, stopping at monitoring end or death.
+- **The PDF holds counts only:** no study IDs, alert IDs or record references. The leak check now reads PDF text, applies the usual catalogue, and for PDFs also forbids study IDs, alert IDs and record references. A test plants a study ID in a PDF and checks it's caught.
+- **Libraries:** the PDF is built with ReportLab 5.0.1 and read back with pypdf 6.19.0. Both are pinned, BSD-licensed, and were at least two weeks old when chosen; a pypdf release from that day was skipped.
+
+### D39. Results on this data
+**Score: 99.02 / 100.**
+
+| Component | Weight | Penalty | Points deducted | Rule results behind it |
+|---|---|---|---|---|
+| missing_value | 25 | 0.13 | 0.03 | `HOME_MISSING_FIELD` 1/777 (0.13%, Medium x1) |
+| duplicate_rows | 20 | 1.67 | 0.33 | `HOME_NEAR_DUPLICATE` 13/777 (1.67%, Medium x1) |
+| invalid_type | 20 | 1.42 | 0.28 | `HOME_TZ_CORRECTED` 22/777 (2.83%, Low x0.5) |
+| outliers | 10 | 1.03 | 0.10 | `HOME_IMPLAUSIBLE` 4/777 (0.51%, High x2) |
+| critical_failures | 15 | 0.00 | 0.00 | nothing found |
+| business_rule_violations | 10 | 2.32 | 0.23 | `HOME_LATE` 36/777 (4.63%, Low x0.5) |
+
+- **The deductions:** the score loses less than one point in total, from duplicates, corrected time zones, impossible values and late arrivals.
+- **Completeness, reported separately and not scored:** 18 of 48 patients (37.5%) went 36+ hours without a usable reading; 12 of them stopped sending before monitoring ended. That reflects the simulated dropout rate (D21).
+- **Readings received:** 737 usable readings against 960 the protocol asked for (76.8%).
+- **Every stage adds up:** both EHR sources, the cohort, home export lines, cleaning, rejections and timeline points.
+- **Clean checks:** 10 of the 19 quality rules found nothing.
+- **`POLICY_REVIEW`:** 2 severe-range alerts held back for lack of consent (D31).

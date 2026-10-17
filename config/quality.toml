@@ -1,0 +1,193 @@
+# Data quality rules and scoring (DECISIONS D35-D39). Each run records this file's SHA-256.
+#
+# The score measures the quality of THIS PIPELINE'S DATA. It is not a clinical or patient-safety
+# measure: clinical alerts describe patients, not data, and are never scored. That includes the
+# "no readings for 36+ hours" alert (DATA_STALE): the report shows it as a separate completeness
+# figure instead (D35, changed in review).
+version = "2"
+# v2: the silence check (patients with no readings for 36+ hours) is no longer scored.
+
+# DataTrust AI's component weights (percent of the score) and severity multipliers, kept unchanged
+# (backend/app/services/scoring.py).
+[weights]
+missing_value = 25.0
+duplicate_rows = 20.0
+invalid_type = 20.0
+outliers = 10.0
+critical_failures = 15.0
+business_rule_violations = 10.0
+
+[severity_multiplier]
+Critical = 3.0
+High = 2.0
+Medium = 1.0
+Low = 0.5
+
+# How each component turns its rules' affected shares into a 0-100 penalty, as in DataTrust,
+# except duplicate_rows (D36):
+#   max_raw       worst affected % (no multiplier)                 missing_value
+#   max_weighted  worst affected % x severity multiplier           duplicate_rows, invalid_type, outliers
+#   sum_weighted  sum of affected % x severity multiplier           business_rule_violations
+# critical_failures: sum over every Critical rule of affected % x 3, capped at 70 (DataTrust).
+[aggregation]
+missing_value = "max_raw"
+duplicate_rows = "max_weighted"
+invalid_type = "max_weighted"
+outliers = "max_weighted"
+business_rule_violations = "sum_weighted"
+critical_failures_cap = 70.0
+
+# Each quality rule: which records it checks (`scope`), which component it feeds, and its severity.
+# `match` is the rejection reason, flag or rule that marks a record as affected.
+
+[[rule]]
+id = "FHIR_MISSING_FIELD"
+name = "FHIR entry without a resource type or ID"
+scope = "fhir_entry"
+match = ["missing_resource_type", "missing_id"]
+component = "missing_value"
+severity = "High"
+
+[[rule]]
+id = "FHIR_DUPLICATE"
+name = "FHIR entry duplicated within a load"
+scope = "fhir_entry"
+match = ["duplicate_in_load"]
+component = "duplicate_rows"
+severity = "Low"
+
+[[rule]]
+id = "FHIR_CONFLICTING_DUPLICATE"
+name = "FHIR entry duplicated with different content"
+scope = "fhir_entry"
+match = ["conflicting_duplicate_in_load"]
+component = "duplicate_rows"
+severity = "High"
+
+[[rule]]
+id = "FHIR_UNREADABLE"
+name = "FHIR file unreadable or not a bundle"
+scope = "fhir_entry"
+match = ["invalid_json", "not_a_bundle"]
+component = "invalid_type"
+severity = "High"
+
+[[rule]]
+id = "HOME_MISSING_FIELD"
+name = "Home reading missing a required field"
+scope = "home_line"
+match = ["missing_field"]
+component = "missing_value"
+severity = "Medium"
+
+[[rule]]
+id = "HOME_EXACT_DUPLICATE"
+name = "Home reading resent unchanged"
+scope = "home_line"
+match = ["duplicate_exact"]
+component = "duplicate_rows"
+severity = "Low"
+
+[[rule]]
+id = "HOME_NEAR_DUPLICATE"
+name = "Home reading repeated within minutes"
+scope = "home_line"
+match = ["duplicate_near"]
+component = "duplicate_rows"
+severity = "Medium"
+
+[[rule]]
+id = "HOME_UNREADABLE"
+name = "Home reading unreadable (bad JSON, non-numeric value or bad timestamp)"
+scope = "home_line"
+match = ["invalid_json", "non_numeric", "invalid_timestamp"]
+component = "invalid_type"
+severity = "Medium"
+
+[[rule]]
+id = "HOME_UNKNOWN_UNIT"
+name = "Home reading in an unknown unit"
+scope = "home_line"
+match = ["unknown_unit"]
+component = "invalid_type"
+severity = "High"
+
+[[rule]]
+id = "HOME_TZ_CORRECTED"
+name = "Home reading with the wrong time zone (corrected)"
+scope = "home_line"
+match = ["flag:tz_corrected"]
+component = "invalid_type"
+severity = "Low"
+
+[[rule]]
+id = "HOME_UNIT_CONVERTED"
+name = "Home reading in kPa (converted)"
+scope = "home_line"
+match = ["flag:unit_converted_kpa"]
+component = "invalid_type"
+severity = "Low"
+
+[[rule]]
+id = "HOME_IMPLAUSIBLE"
+name = "Home reading with a physiologically impossible value"
+scope = "home_line"
+match = ["implausible_value"]
+component = "outliers"
+severity = "High"
+
+[[rule]]
+id = "HOME_OUTSIDE_WINDOW"
+name = "Home reading outside the monitoring window"
+scope = "home_line"
+match = ["outside_monitoring_window"]
+component = "business_rule_violations"
+severity = "Medium"
+
+[[rule]]
+id = "HOME_LATE"
+name = "Home reading received over 24 hours late (kept)"
+scope = "home_line"
+match = ["flag:late"]
+component = "business_rule_violations"
+severity = "Low"
+
+[[rule]]
+id = "HOME_UNKNOWN_PATIENT"
+name = "Home reading for a patient not enrolled"
+scope = "home_line"
+match = ["unknown_patient"]
+component = "business_rule_violations"
+severity = "Critical"
+
+[[rule]]
+id = "HOME_AFTER_DEATH"
+name = "Home reading dated after the patient's death"
+scope = "home_line"
+match = ["after_death"]
+component = "business_rule_violations"
+severity = "Critical"
+
+[[rule]]
+id = "CLINICAL_INCOMPLETE_PANEL"
+name = "Clinical BP panel missing systolic or diastolic"
+scope = "clinical_panel"
+match = ["missing_component"]
+component = "missing_value"
+severity = "Low"
+
+[[rule]]
+id = "COHORT_ENCOUNTER_MISSING"
+name = "Delivery whose encounter is missing from the record"
+scope = "delivery_patient"
+match = ["delivery_encounter_missing"]
+component = "business_rule_violations"
+severity = "High"
+
+[[rule]]
+id = "LOAD_FAILED"
+name = "Latest load of a source failed"
+scope = "latest_load"
+match = ["failed"]
+component = "critical_failures"
+severity = "Critical"

@@ -310,7 +310,8 @@ def clean(con: duckdb.DuckDBPyConnection, cfg: dict[str, Any], enrollment_source
           raw_load_id: int, lookback_days: int) -> CleanStats:
     stats = CleanStats()
     stats.clean_id = con.execute("SELECT nextval('home.clean_id_seq')").fetchone()[0]
-    for table in ("home.enrollment", "home.reading", "home.reading_rejection", "timeline.bp_reading"):
+    for table in ("home.enrollment", "home.reading", "home.reading_rejection", "timeline.bp_reading",
+                  "timeline.skipped_panel"):
         con.execute(f"DELETE FROM {table}")
 
     enr, problems = load_enrollment(con, enrollment_source, cfg["monitoring"]["max_days"])
@@ -368,11 +369,13 @@ def clean(con: duckdb.DuckDBPyConnection, cfg: dict[str, Any], enrollment_source
 
     # Timeline: home readings as cleaned, plus clinical BP panels (IDs and values only, D6).
     timeline = [(pid, "home", rid, m, day, hrs, s, d, f) for rid, _, _, pid, m, _, _, day, hrs, s, d, f, *_ in rows]
+    skipped = []
     for pid, record_id, measured, systolic, diastolic in con.execute(CLINICAL_SQL, {
             "panel": LOINC_BP_PANEL, "systolic": LOINC_SYSTOLIC, "diastolic": LOINC_DIASTOLIC,
             "lookback": lookback_days}).fetchall():
         if systolic is None or diastolic is None:
             stats.clinical_skipped += 1   # a panel without both components can't be plotted
+            skipped.append((record_id, stats.clean_id, pid, "missing_component"))
             continue
         e = by_study[pid]
         m = measured.replace(tzinfo=UTC)
@@ -381,6 +384,8 @@ def clean(con: duckdb.DuckDBPyConnection, cfg: dict[str, Any], enrollment_source
         stats.clinical_points += 1
     if timeline:
         con.executemany("INSERT INTO timeline.bp_reading VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", timeline)
+    if skipped:
+        con.executemany("INSERT INTO timeline.skipped_panel VALUES (?, ?, ?, ?)", skipped)
 
     con.execute("INSERT INTO home.clean_run VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
         stats.clean_id, datetime.now(UTC), cfg["version"], cfg["sha256"], raw_load_id, stats.lines_in,

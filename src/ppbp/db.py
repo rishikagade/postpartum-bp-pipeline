@@ -12,6 +12,7 @@ Schemas:
     timeline  one BP timeline per cohort patient: home and clinical readings (Phase 4).
     alerts    rule results per record, alerts, and their evidence (Phase 5).
     audit     who read what, when, and whether it was allowed (Phase 5b).
+    quality   data quality rule results per record, and the score built from them (Phase 6).
 
 Everything outside raw and phi identifies patients only by study ID (SID-...), never by
 record number, name or contact detail. `make leak-check` verifies this (D33).
@@ -34,6 +35,7 @@ CREATE SCHEMA IF NOT EXISTS timeline;
 CREATE SCHEMA IF NOT EXISTS alerts;
 CREATE SCHEMA IF NOT EXISTS phi;
 CREATE SCHEMA IF NOT EXISTS audit;
+CREATE SCHEMA IF NOT EXISTS quality;
 
 CREATE SEQUENCE IF NOT EXISTS ops.load_id_seq START 1;
 
@@ -369,6 +371,50 @@ CREATE TABLE IF NOT EXISTS audit.access_log (
     patient_id    VARCHAR,                     -- study ID
     outcome       VARCHAR NOT NULL,            -- 'allowed' | 'denied' | 'not_found'
     reason        VARCHAR                      -- stated purpose (contact lookups) or why denied
+);
+
+-- Clinical BP panels left off the timeline, with the reason (a panel needs both components).
+CREATE TABLE IF NOT EXISTS timeline.skipped_panel (
+    record_id  VARCHAR PRIMARY KEY,                -- FHIR Observation id
+    clean_id   INTEGER NOT NULL,
+    patient_id VARCHAR NOT NULL,                   -- study ID
+    reason     VARCHAR NOT NULL                    -- 'missing_component'
+);
+
+-- Phase 6. One row per quality run; the other quality tables hold the latest run only.
+CREATE SEQUENCE IF NOT EXISTS quality.run_id_seq START 1;
+
+CREATE TABLE IF NOT EXISTS quality.run (
+    run_id         INTEGER PRIMARY KEY,
+    run_at         TIMESTAMPTZ NOT NULL,
+    config_version VARCHAR NOT NULL,
+    config_sha256  VARCHAR NOT NULL,
+    overall_score  DOUBLE NOT NULL,
+    inputs         JSON NOT NULL                -- the load, build, cleaning and alert runs scored
+);
+
+-- One row per quality rule: DataTrust's rule-result shape, computed from the per-record rows below.
+CREATE TABLE IF NOT EXISTS quality.rule_summary (
+    rule_id      VARCHAR PRIMARY KEY,
+    run_id       INTEGER NOT NULL,
+    name         VARCHAR NOT NULL,
+    scope        VARCHAR NOT NULL,             -- which records the rule checks
+    component    VARCHAR NOT NULL,
+    severity     VARCHAR NOT NULL,
+    evaluated    INTEGER NOT NULL,
+    affected     INTEGER NOT NULL,
+    affected_pct DOUBLE NOT NULL
+);
+
+-- Every record a quality rule flagged. IDs only (study IDs for patients, D30).
+CREATE TABLE IF NOT EXISTS quality.rule_result (
+    run_id      INTEGER NOT NULL,
+    rule_id     VARCHAR NOT NULL,
+    record_type VARCHAR NOT NULL,
+    record_id   VARCHAR NOT NULL,
+    patient_id  VARCHAR,
+    detail      VARCHAR,
+    PRIMARY KEY (rule_id, record_type, record_id)
 );
 
 -- Every delivery patient not in the cohort, with the reason.

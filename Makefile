@@ -10,7 +10,7 @@ PY := $(VENV)/bin/python
 # Editable-install .pth files can get the macOS "hidden" flag, which Python skips.
 export PYTHONPATH := src
 
-.PHONY: setup data explore walkthrough ingest cohort home alerts explain privacy leak-check leak-check-history test
+.PHONY: setup data explore walkthrough ingest cohort home alerts explain privacy leak-check leak-check-history report test
 
 # One-time setup: virtualenv, dependencies, and the Synthea sample download.
 setup:
@@ -67,6 +67,11 @@ leak-check:
 # Phase 5b: the same check over every file and message in every commit. Run before any push.
 leak-check-history:
 	$(LOG) -m ppbp.privacy.leak_check --history | tee $(LOGS)/leak_check_history.log
+
+# Phase 6: score data quality and write the JSON and PDF report, then leak-check everything (incl. the PDF).
+report:
+	$(LOG) -m ppbp.quality.report | tee $(LOGS)/report.log
+	$(MAKE) -s leak-check
 
 test:
 	$(PY) -m pytest -q
