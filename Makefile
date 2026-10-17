@@ -1,15 +1,16 @@
 PYTHON ?= python3.11
 SHELL := /bin/bash
-.SHELLFLAGS := -o pipefail -c
 # Each pipeline step's console output is also kept in data/out/logs/, which the leak check scans.
+# `set -o pipefail` in the recipe, not .SHELLFLAGS: macOS ships make 3.81, which ignores .SHELLFLAGS,
+# and without it a failing step piped through tee would look like success.
 LOGS := data/out/logs
-LOG = mkdir -p $(LOGS) && $(PY)
+LOG = set -o pipefail; mkdir -p $(LOGS) && $(PY)
 VENV := .venv
 PY := $(VENV)/bin/python
 # Editable-install .pth files can get the macOS "hidden" flag, which Python skips.
 export PYTHONPATH := src
 
-.PHONY: setup data explore walkthrough ingest cohort home alerts explain privacy leak-check test
+.PHONY: setup data explore walkthrough ingest cohort home alerts explain privacy leak-check leak-check-history test
 
 # One-time setup: virtualenv, dependencies, and the Synthea sample download.
 setup:
@@ -62,6 +63,10 @@ privacy:
 # Phase 5b: scan tables, logs, reports, access-layer responses and tracked files for identifiers.
 leak-check:
 	$(LOG) -m ppbp.privacy.leak_check | tee $(LOGS)/leak_check.log
+
+# Phase 5b: the same check over every file and message in every commit. Run before any push.
+leak-check-history:
+	$(LOG) -m ppbp.privacy.leak_check --history | tee $(LOGS)/leak_check_history.log
 
 test:
 	$(PY) -m pytest -q

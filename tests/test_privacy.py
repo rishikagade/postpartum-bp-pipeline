@@ -278,3 +278,12 @@ def test_enrollment_numbers_follow_discharge_order_whatever_the_key(world, tmp_p
     run_home(db2, world["tmp"] / "home.toml", tmp_path / "home2")
     assert by_record_number(db2) == first
     assert not set(_q(db2, "SELECT patient_id FROM home.enrollment")) & set(_q(world["db"], "SELECT patient_id FROM home.enrollment"))
+
+
+def test_truncated_record_number_prefixes_are_caught(world) -> None:
+    with duckdb.connect(str(world["db"]), read_only=True) as con:
+        cat = leak_check.build_catalogue(con)
+    prefix = next(iter(cat.prefixes))
+    assert leak_check.find(f'"reference": "urn:uuid:{prefix}-..."', cat)["record_number_prefix"] == 1
+    # Part of a longer hex run (another resource's ID), not a record number.
+    assert not leak_check.find(f'"id": "{prefix}a1-..."', cat)

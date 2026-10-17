@@ -1,6 +1,7 @@
 """Phase 5b: check that nothing identifying has leaked out of the restricted zones (D33).
 
-    python -m ppbp.privacy.leak_check     # exits 1 if anything is found
+    python -m ppbp.privacy.leak_check             # exits 1 if anything is found
+    python -m ppbp.privacy.leak_check --history   # every file and message in every commit
 
 Builds a catalogue of identifying values from the restricted zones (FHIR Patients and
 Practitioners in raw, contact details in phi). Then it scans everything outside those zones:
@@ -37,7 +38,8 @@ RESTRICTED = ["schema raw", "schema phi", "data/raw/", "data/generated/", "data/
 REPORT_PATH = DATA_DIR / "out" / "privacy" / "leak_check.json"
 
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-HEX8 = re.compile(r"(?<![0-9a-fA-F-])[0-9a-f]{8}(?![0-9a-fA-F-])")
+# An 8-hex record-number prefix on its own, or truncated in an example as "a1b2c3d4-...".
+HEX8 = re.compile(r"(?<![0-9a-fA-F-])[0-9a-f]{8}(?=-\.\.\.|(?![0-9a-fA-F-]))")
 WORD_WITH_DIGITS = re.compile(r"[A-Za-z][A-Za-z'\-]*\d+")     # Synthea names carry digits, e.g. "Given12"
 CODE_TOKEN = re.compile(r"[A-Z0-9][A-Z0-9\-]{5,}[A-Z0-9]")
 
@@ -231,12 +233,46 @@ def print_report(r: dict[str, Any]) -> None:
     print(f"   report: {REPORT_PATH.relative_to(PROJECT_ROOT)} (findings name the place and kind, never the value)")
 
 
+def scan_history(db_path: Path = DB_PATH, repo: Path = PROJECT_ROOT) -> dict[str, Any]:
+    """Every file and the message of every commit on every branch. Run before any push."""
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True).stdout
+
+    with duckdb.connect(str(db_path), read_only=True) as con:
+        cat = build_catalogue(con)
+    commits, findings, blobs = git("rev-list", "--all", "--reverse").split(), [], 0
+    for c in commits:
+        short = git("log", "-1", "--format=%h", c).strip()
+        kinds = find(git("log", "-1", "--format=%B", c), cat)
+        if kinds:
+            findings.append(Finding("commit_message", short, dict(kinds)))
+        for f in git("ls-tree", "-r", "--name-only", c).split():
+            try:
+                text = git("show", f"{c}:{f}")
+            except (subprocess.CalledProcessError, UnicodeDecodeError):
+                continue
+            blobs += 1
+            kinds = find(text, cat)
+            if kinds:
+                findings.append(Finding("commit_file", f"{short}:{f}", dict(kinds)))
+    return {"commits": len(commits), "files_scanned": blobs, "findings": [f.__dict__ for f in findings],
+            "passed": not findings}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--db", type=Path, default=DB_PATH)
+    parser.add_argument("--history", action="store_true", help="scan every commit instead of the current state")
     args = parser.parse_args()
-    report = run(args.db)
-    print_report(report)
+    if args.history:
+        report = scan_history(args.db)
+        print(f"== History leak check: {'PASSED' if report['passed'] else 'FAILED'}")
+        print(f"   scanned: {report['commits']} commits, {report['files_scanned']} files")
+        for f in report["findings"]:
+            print(f"   FOUND in {f['target']} {f['location']}: {f['kinds']}")
+    else:
+        report = run(args.db)
+        print_report(report)
     if not report["passed"]:
         raise SystemExit(1)
 
