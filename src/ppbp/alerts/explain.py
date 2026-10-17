@@ -7,6 +7,10 @@ evidence record with its rule result, and for every home reading the chain:
 clean reading -> exact raw line (text and SHA-256) -> the load and file hash that brought it in
 -> the cleaning run and its config hash. Also returns the patient's readings in the
 `context_hours` before the alert. IDs and values only; no identifying data (R7).
+
+Raw lines are shown redacted: the vendor's record number and device ID are replaced, because
+they identify the patient (D30). `line_sha256` is the hash of the original line, so anyone with
+raw-zone access can confirm the redacted line is the same record.
 """
 
 from __future__ import annotations
@@ -24,6 +28,22 @@ from ppbp.alerts.evaluate import RULES_PATH, load_rules
 
 class AlertNotFound(KeyError):
     pass
+
+
+# Fields in a raw home export line that identify the patient or their device (D30).
+REDACT = {"patient_ref": "[record number withheld: see study ID]", "device_id": "[device ID withheld]"}
+
+
+def redact_line(raw_line: str) -> tuple[str, list[str]]:
+    """The raw line with identifying fields replaced, and the names of the fields replaced."""
+    try:
+        record = json.loads(raw_line)
+    except json.JSONDecodeError:
+        return "[unparseable line withheld]", ["*"]
+    if not isinstance(record, dict):
+        return "[unparseable line withheld]", ["*"]
+    hidden = [k for k in REDACT if k in record]
+    return json.dumps({k: REDACT.get(k, v) for k, v in record.items()}), hidden
 
 
 def _rows(con: duckdb.DuckDBPyConnection, sql: str, params: list) -> list[dict[str, Any]]:
@@ -84,13 +104,17 @@ def explain_alert(alert_id: str, db_path: Path = DB_PATH, rules_path: Path = RUL
                     JOIN raw.home_line_version v USING (source_file, line_no, line_sha256)
                     LEFT JOIN raw.home_line_current cur USING (source_file, line_no, line_sha256)
                     WHERE r.reading_id = ?""", [ev["record_id"]])
+                item["raw"]["raw_line_redacted"], item["raw"]["redacted_fields"] = \
+                    redact_line(item["raw"].pop("raw_line"))
                 item["raw"]["loaded_by"] = _one(con, """
                     SELECT l.load_id, l.kind, l.started_at::VARCHAR AS started_at, f.file_sha256
-                    FROM ops.load_run l JOIN ops.load_file f USING (load_id)
+                    FROM ops.load_run l JOIN raw.load_file f USING (load_id)
                     WHERE l.load_id = ? AND f.source_file = ?""",
                     [item["raw"]["first_load_id"], item["raw"]["source_file"]])
             evidence.append(item)
 
+        hold = _one(con, """SELECT reason, status_if_held, detail FROM alerts.alert_hold WHERE alert_id = ?""",
+                    [alert_id])
         context_hours = load_rules(rules_path)["context_hours"]
         context = _rows(con, """
             SELECT source, record_id, measured_at::VARCHAR AS measured_at, postpartum_day, systolic, diastolic, flags
@@ -106,6 +130,7 @@ def explain_alert(alert_id: str, db_path: Path = DB_PATH, rules_path: Path = RUL
         "rule_run": run,
         "cleaning_run": cleaning,
         "patient": patient,
+        "hold": hold,                      # set when the alert is held back for consent (D31)
         "evidence": evidence,
         "context": {"hours_before_alert": context_hours, "readings": context},
     }

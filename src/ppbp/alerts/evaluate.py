@@ -24,10 +24,11 @@ from zoneinfo import ZoneInfo
 
 import duckdb
 
-from ppbp import DB_PATH, PROJECT_ROOT
+from ppbp import DATA_DIR, DB_PATH, PROJECT_ROOT
 from ppbp.db import connect
 
 RULES_PATH = PROJECT_ROOT / "config" / "rules.toml"
+REPORT_PATH = DATA_DIR / "out" / "reports" / "alerts_latest.json"
 RULE_KINDS = {"reading_threshold", "persistent_threshold", "patient_silence"}
 
 
@@ -285,6 +286,27 @@ def evaluate_silence(rule: dict[str, Any], readings: list[Reading], windows: lis
     return results, alerts
 
 
+# --- Consent gating (Phase 5b, D31) -----------------------------------------
+
+
+def hold_without_consent(con: duckdb.DuckDBPyConnection, alerts: list[Alert]) -> list[tuple[str, str, str, str]]:
+    """Hold back every alert for a patient without home-monitoring consent.
+
+    The rules still run on their readings, so the results stay complete and auditable, but the
+    alert never reaches the nurse's list. Each held alert keeps the status it would have had,
+    and records the reason and where the consent decision came from.
+    Returns (alert_id, reason, status_if_held, detail) per held alert."""
+    no_consent = {r[0]: f"home.enrollment: consent_home_monitoring = false (roster {r[1]}#{r[2]})"
+                  for r in con.execute("""SELECT patient_id, source_file, line_no FROM home.enrollment
+                                          WHERE NOT consent_home_monitoring""").fetchall()}
+    holds = []
+    for a in alerts:
+        if a.patient_id in no_consent:
+            holds.append((a.alert_id, "no_home_monitoring_consent", a.status, no_consent[a.patient_id]))
+            a.status = "held_back"
+    return holds
+
+
 # --- Run -------------------------------------------------------------------
 
 
@@ -314,11 +336,13 @@ def evaluate(db_path: Path = DB_PATH, rules_path: Path = RULES_PATH) -> RunStats
                 res, al = evaluate_silence(rule, readings, windows)
             results += res
             alerts += al
+        holds = hold_without_consent(con, alerts)
 
         con.begin()
         try:
             run_id = con.execute("SELECT nextval('alerts.run_id_seq')").fetchone()[0]
-            for table in ("alerts.rule", "alerts.validation_result", "alerts.alert", "alerts.alert_evidence"):
+            for table in ("alerts.rule", "alerts.validation_result", "alerts.alert", "alerts.alert_evidence",
+                          "alerts.alert_hold"):
                 con.execute(f"DELETE FROM {table}")
             con.executemany("INSERT INTO alerts.rule VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
                 (r["id"], r["version"], run_id, r["name"], r["label"], r["severity"], r["kind"],
@@ -335,6 +359,9 @@ def evaluate(db_path: Path = DB_PATH, rules_path: Path = RULES_PATH) -> RunStats
                     for a in alerts])
                 con.executemany("INSERT INTO alerts.alert_evidence VALUES (?, ?, ?, ?)",
                                 [(a.alert_id, *e) for a in alerts for e in a.evidence])
+            if holds:
+                con.executemany("INSERT INTO alerts.alert_hold VALUES (?, ?, ?, ?, ?)",
+                                [(h[0], run_id, *h[1:]) for h in holds])
             con.execute("INSERT INTO alerts.rule_run VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
                 run_id, datetime.now(UTC), cfg["version"], cfg["sha256"], clean_id, len(readings),
                 len(windows), len(results), len(alerts)])
@@ -357,14 +384,45 @@ def print_report(stats: RunStats, db_path: Path = DB_PATH, limit: int = 15) -> N
                 FROM alerts.rule_summary s LEFT JOIN alerts.alert a USING (rule_id)
                 GROUP BY ALL ORDER BY min(a.severity_rank), s.rule_id""").fetchall():
             print(f"   {row[0]:<12} {row[1]:>3} {row[2]:<9} {row[3]:>8} {row[4]:>5} {row[5]:>6}%  {row[6]:>6}  {row[7]:>8}")
+        held = con.execute("""
+            SELECT a.rule_id, count(*), count(DISTINCT a.patient_id),
+                   count(*) FILTER (WHERE h.status_if_held = 'open'), count(*) FILTER (WHERE h.status_if_held = 'closed')
+            FROM alerts.alert_hold h JOIN alerts.alert a USING (alert_id) GROUP BY 1 ORDER BY 1""").fetchall()
+        no_consent = con.execute("SELECT count(*) FROM home.enrollment WHERE NOT consent_home_monitoring").fetchone()[0]
+        print(f"== Held back: no home-monitoring consent ({no_consent} patients); reason recorded per alert")
+        for rule_id, n, patients, would_open, would_close in held:
+            print(f"   {rule_id:<12} {n:>3} alerts from {patients} patients "
+                  f"(would have been {would_open} open, {would_close} closed)")
+        print(f"   total        {sum(h[1] for h in held):>3} held back of {len(stats.alerts)} alerts")
+        held_severe = sum(h[1] for h in held if h[0] == "BP_SEVERE")
+        if held_severe:
+            print(f"   POLICY REVIEW: {held_severe} severe-range alerts held back for lack of consent. A real service "
+                  f"needs a safety escalation path for these (DECISIONS D31).")
         n_open = sum(a.status == "open" for a in stats.alerts)
+        n_closed = sum(a.status == "closed" for a in stats.alerts)
         print(f"== Open alerts, most urgent first (showing {min(limit, n_open)} of {n_open} open; "
-              f"{len(stats.alerts) - n_open} closed)")
+              f"{n_closed} closed; {len(stats.alerts) - n_open - n_closed} held back)")
         for a in con.execute("""
                 SELECT alert_id, severity, label, patient_id, postpartum_day, triggered_at::TIMESTAMP, summary
                 FROM alerts.alert WHERE status = 'open'
                 ORDER BY severity_rank, triggered_at, alert_id LIMIT ?""", [limit]).fetchall():
-            print(f"   {a[0]}  {a[1]:<8} day {a[4]:>2}  patient {a[3][:8]}  {a[6]}")
+            print(f"   {a[0]}  {a[1]:<8} day {a[4]:>2}  {a[3]}  {a[6]}")
+
+
+def write_run_report(stats: RunStats, db_path: Path = DB_PATH, path: Path = REPORT_PATH) -> None:
+    """Counts only, no patient details: the alert part of the quality report (Phase 6)."""
+    from ppbp.privacy.access import hold_summary
+
+    with duckdb.connect(str(db_path), read_only=True) as con:
+        by_rule = [dict(zip(("rule_id", "rule_version", "severity", "affected", "evaluated", "affected_pct"), r))
+                   for r in con.execute("""SELECT rule_id, rule_version, severity, affected_count, evaluated_count,
+                                                  affected_pct FROM alerts.rule_summary ORDER BY rule_id""").fetchall()]
+        status = dict(con.execute("SELECT status, count(*) FROM alerts.alert GROUP BY 1").fetchall())
+    report = {"run_id": stats.run_id, "readings": stats.readings, "patients": stats.patients,
+              "rule_results": len(stats.results), "alerts": len(stats.alerts), "alerts_by_status": status,
+              "rules": by_rule, "holds": hold_summary(db_path)}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2, default=float) + "\n")
 
 
 def main() -> None:
@@ -372,7 +430,10 @@ def main() -> None:
     parser.add_argument("--db", type=Path, default=DB_PATH)
     parser.add_argument("--rules", type=Path, default=RULES_PATH)
     args = parser.parse_args()
-    print_report(evaluate(args.db, args.rules), args.db)
+    stats = evaluate(args.db, args.rules)
+    print_report(stats, args.db)
+    write_run_report(stats, args.db)
+    print(f"   report: {REPORT_PATH.relative_to(PROJECT_ROOT)}")
 
 
 if __name__ == "__main__":

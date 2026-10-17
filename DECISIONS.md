@@ -62,11 +62,11 @@ Everything lives in one DuckDB file (`data/ppbp.duckdb`, git-ignored). The `raw`
 
 ### D9. Identity and change detection
 A resource is identified by `(resourceType, id)`. Its version is the SHA-256 of its JSON with sorted keys and no whitespace, so key order and formatting never count as a change. Checked on the sample: every one of the 409,973 entries has an `id`, and no `(resourceType, id)` appears twice across the 557 files.
-- `raw.fhir_resource_version` keeps every distinct version and is never updated. `raw.fhir_resource_current` points at the latest one. `ops.resource_change` lists every new or changed resource per load. Unchanged resources are counted, not listed, so a reload doesn't add 410k rows.
+- `raw.fhir_resource_version` keeps every distinct version and is never updated. `raw.fhir_resource_current` points at the latest one. `raw.resource_change` (in `ops` until Phase 5b, D33) lists every new or changed resource per load. Unchanged resources are counted, not listed, so a reload doesn't add 410k rows.
 - Resources missing from a later load are **not** treated as deleted. The Phase 3 augmentation bundle is loaded on its own, so "absent from this load" doesn't mean "deleted". Deletion handling is listed as a limitation.
 
 ### D10. Loads are all-or-nothing, and nothing is dropped silently
-Each load runs in one transaction. A failure rolls everything back and leaves a `failed` row in `ops.load_run` with the error. Bad input doesn't fail the load. It's written to `ops.load_rejection` with a reason: `invalid_json`, `not_a_bundle`, `missing_resource_type`, `missing_id`, `duplicate_in_load` (identical copy), or `conflicting_duplicate_in_load` (a different copy; the first one in file-name order is kept). Each input file's SHA-256 goes in `ops.load_file`, so it's always clear exactly which bytes were loaded.
+Each load runs in one transaction. A failure rolls everything back and leaves a `failed` row in `ops.load_run` with the error. Bad input doesn't fail the load. It's written to `raw.load_rejection` with a reason: `invalid_json`, `not_a_bundle`, `missing_resource_type`, `missing_id`, `duplicate_in_load` (identical copy), or `conflicting_duplicate_in_load` (a different copy; the first one in file-name order is kept). Each input file's SHA-256 goes in `raw.load_file`, so it's always clear exactly which bytes were loaded. (Both tables were in `ops` until Phase 5b moved them to the restricted zone, D33.)
 
 ### D11. The project folder is iCloud-synced, so data lives in `data.nosync/`
 The repo sits under `~/Documents`, which iCloud Drive syncs on this machine. A full load takes about 50 s with the database outside iCloud, and about 4.5 min inside it (the CPU sits mostly idle). Setting `PPBP_DB_PATH` puts the database elsewhere. Sync also sets macOS's `hidden` flag on the venv's editable-install `.pth` file, and Python 3.11.13 skips hidden `.pth` files, so the Makefile and pytest put `src` on `PYTHONPATH` directly.
@@ -234,48 +234,48 @@ PLAN.md wasn't in the repo while Phase 5 was built. This phase was designed from
 | `DATA_STALE` (Medium) | 18 | 18 | 18 | 18 |
 | **Total** | **172** | **60** | **36** | **33** |
 
-Elevated alerts per patient went from a median of 6 (max 8) to a median of 1 (max 2). Four patients lose their only elevated alert (`#32`, `#38`, `#42`, `#11`), because each had one elevated reading that was never confirmed. Their reading still has a rule result (`unconfirmed`) and is on the timeline.
+Elevated alerts per patient went from a median of 6 (max 8) to a median of 1 (max 2). Four patients lose their only elevated alert (enrolled patients #11, #32, #38 and #42), because each had one elevated reading that was never confirmed. Their reading still has a rule result (`unconfirmed`) and is on the timeline.
 
-**Before and after, by patient** (alerts as severe / elevated / silence; patients with any alert under either version; IDs shortened to 8 characters):
+**Before and after, by patient** (alerts as severe / elevated / silence; patients with any alert under either version, by enrollment number: #1 is the earliest discharge, D30):
 
-| Patient | Before | Total | After | Total |
+| Patient (enrollment #) | Before | Total | After | Total |
 |---|---|---|---|---|
-| `#43` | 3 / 7 / 0 | 10 | 3 / 1 / 0 | 4 |
-| `#9` | 3 / 7 / 0 | 10 | 3 / 1 / 0 | 4 |
-| `#45` | 2 / 6 / 1 | 9 | 2 / 1 / 1 | 4 |
-| `#1` | 1 / 8 / 0 | 9 | 1 / 1 / 0 | 2 |
-| `#26` | 1 / 8 / 0 | 9 | 1 / 1 / 0 | 2 |
-| `#22` | 1 / 7 / 0 | 8 | 1 / 1 / 0 | 2 |
-| `#48` | 0 / 7 / 1 | 8 | 0 / 1 / 1 | 2 |
-| `#12` | 0 / 7 / 1 | 8 | 0 / 1 / 1 | 2 |
-| `#27` | 0 / 6 / 1 | 7 | 0 / 2 / 1 | 3 |
-| `#28` | 0 / 7 / 0 | 7 | 0 / 1 / 0 | 1 |
-| `#7` | 0 / 7 / 0 | 7 | 0 / 1 / 0 | 1 |
-| `#18` | 0 / 6 / 0 | 6 | 0 / 1 / 0 | 1 |
-| `#19` | 0 / 6 / 0 | 6 | 0 / 2 / 0 | 2 |
-| `#25` | 0 / 6 / 0 | 6 | 0 / 1 / 0 | 1 |
-| `#10` | 0 / 5 / 1 | 6 | 0 / 1 / 1 | 2 |
-| `#34` | 0 / 6 / 0 | 6 | 0 / 2 / 0 | 2 |
-| `#5` | 0 / 6 / 0 | 6 | 0 / 2 / 0 | 2 |
-| `#21` | 0 / 5 / 1 | 6 | 0 / 2 / 1 | 3 |
-| `#24` | 0 / 5 / 0 | 5 | 0 / 1 / 0 | 1 |
-| `#14` | 0 / 4 / 1 | 5 | 0 / 1 / 1 | 2 |
-| `#4` | 0 / 5 / 0 | 5 | 0 / 2 / 0 | 2 |
-| `#46` | 0 / 3 / 1 | 4 | 0 / 1 / 1 | 2 |
-| `#35` | 0 / 2 / 1 | 3 | 0 / 1 / 1 | 2 |
-| `#36` | 0 / 2 / 1 | 3 | 0 / 1 / 1 | 2 |
-| `#11` | 0 / 1 / 1 | 2 | 0 / 0 / 1 | 1 |
-| `#16` | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
-| `#32` | 0 / 1 / 0 | 1 | 0 / 0 / 0 | 0 |
-| `#38` | 0 / 1 / 0 | 1 | 0 / 0 / 0 | 0 |
-| `#37` | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
-| `#29` | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
-| `#42` | 0 / 1 / 0 | 1 | 0 / 0 / 0 | 0 |
-| `#8` | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
-| `#39` | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
-| `#40` | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
-| `#33` | 0 / 1 / 0 | 1 | 0 / 1 / 0 | 1 |
-| `#6` | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
+| #43 | 3 / 7 / 0 | 10 | 3 / 1 / 0 | 4 |
+| #9 | 3 / 7 / 0 | 10 | 3 / 1 / 0 | 4 |
+| #45 | 2 / 6 / 1 | 9 | 2 / 1 / 1 | 4 |
+| #1 | 1 / 8 / 0 | 9 | 1 / 1 / 0 | 2 |
+| #26 | 1 / 8 / 0 | 9 | 1 / 1 / 0 | 2 |
+| #22 | 1 / 7 / 0 | 8 | 1 / 1 / 0 | 2 |
+| #48 | 0 / 7 / 1 | 8 | 0 / 1 / 1 | 2 |
+| #12 | 0 / 7 / 1 | 8 | 0 / 1 / 1 | 2 |
+| #27 | 0 / 6 / 1 | 7 | 0 / 2 / 1 | 3 |
+| #28 | 0 / 7 / 0 | 7 | 0 / 1 / 0 | 1 |
+| #7 | 0 / 7 / 0 | 7 | 0 / 1 / 0 | 1 |
+| #18 | 0 / 6 / 0 | 6 | 0 / 1 / 0 | 1 |
+| #19 | 0 / 6 / 0 | 6 | 0 / 2 / 0 | 2 |
+| #25 | 0 / 6 / 0 | 6 | 0 / 1 / 0 | 1 |
+| #10 | 0 / 5 / 1 | 6 | 0 / 1 / 1 | 2 |
+| #34 | 0 / 6 / 0 | 6 | 0 / 2 / 0 | 2 |
+| #5 | 0 / 6 / 0 | 6 | 0 / 2 / 0 | 2 |
+| #21 | 0 / 5 / 1 | 6 | 0 / 2 / 1 | 3 |
+| #24 | 0 / 5 / 0 | 5 | 0 / 1 / 0 | 1 |
+| #14 | 0 / 4 / 1 | 5 | 0 / 1 / 1 | 2 |
+| #4 | 0 / 5 / 0 | 5 | 0 / 2 / 0 | 2 |
+| #46 | 0 / 3 / 1 | 4 | 0 / 1 / 1 | 2 |
+| #35 | 0 / 2 / 1 | 3 | 0 / 1 / 1 | 2 |
+| #36 | 0 / 2 / 1 | 3 | 0 / 1 / 1 | 2 |
+| #11 | 0 / 1 / 1 | 2 | 0 / 0 / 1 | 1 |
+| #16 | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
+| #32 | 0 / 1 / 0 | 1 | 0 / 0 / 0 | 0 |
+| #38 | 0 / 1 / 0 | 1 | 0 / 0 / 0 | 0 |
+| #37 | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
+| #29 | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
+| #42 | 0 / 1 / 0 | 1 | 0 / 0 / 0 | 0 |
+| #8 | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
+| #39 | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
+| #40 | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
+| #33 | 0 / 1 / 0 | 1 | 0 / 1 / 0 | 1 |
+| #6 | 0 / 0 / 1 | 1 | 0 / 0 / 1 | 1 |
 
 ### D27. Only home readings are evaluated
 Clinical BP panels from the FHIR store sit on the timeline as context and appear in `explain_alert`. They don't trigger alerts. Most are from before delivery, and the nurse's job here is the home-monitoring period.
@@ -306,3 +306,84 @@ Clinical BP panels from the FHIR store sit on the timeline as context and appear
 
 ### Carried forward to Phase 7
 - **Unconfirmed elevated readings must be visible on the patient timeline** (decided in review). A reading whose `BP_ELEVATED` outcome is `unconfirmed` (5 readings on this data) must appear on the timeline view, marked "unconfirmed". The point is to show that cutting alerts from 172 to 60 is prioritization, not hidden data. The timeline should also distinguish readings that contributed to an elevated alert, and readings superseded by a severe alert.
+
+## Phase 5b: Privacy
+
+PLAN.md wasn't in the repo while Phase 5b was built either. It was designed from REQUIREMENTS R7, D6, and the Phase 5b carry-forward above. `make privacy` rebuilds the contact table and runs the leak check, and `make leak-check` runs just the check. Counts below are from the pipeline's own output.
+
+### D30. Patients are identified downstream by a keyed study ID, not their record number (decided in review)
+- **Why:** Synthea's `Patient.id` is also the patient's medical record number (its `MR` identifier). That was checked on all 48 cohort Patients. Until this phase it was the `patient_id` in every cohort, home, timeline and alert table, which breaks R7.
+- **The study ID:** `study_id = "SID-" + HMAC-SHA256(key, Patient.id)[:12 hex]`.
+  - **Where the key lives:** the secret key is never committed. It comes from `PPBP_PSEUDONYM_KEY`, or from `data/secrets/pseudonym.key`, which is generated on first use with owner-only permissions and git-ignored.
+  - **Where the mapping lives:** only in the restricted `phi.patient_key`, with the key's fingerprint. Running with a different key is refused rather than silently re-keying everyone.
+  - **Tests:** they use a fixed test key, so they never write a key file.
+- **Where the swap happens:** at each boundary out of the raw zone.
+  - The **cohort build** selects patients by record number inside the raw zone, then writes study IDs, so the selection is unchanged.
+  - **Cleaning** maps the vendor's record number to the study ID.
+  - The **timeline** maps each clinical BP panel's FHIR subject the same way.
+  - The **simulator** stands in for the outside home-monitoring vendor, which knows its patients. So it reads record numbers through `phi.patient_key`, and its exports are restricted raw input.
+- **Numbers unchanged:** because the simulator still runs on record numbers, its output is byte-identical (all 825 raw lines unchanged on reload), and every count reported in D3–D29 is unchanged.
+- **IDs depend on the key:** study IDs and alert IDs depend on the key. With a different key, the IDs change but no value or count does. So documents never cite a study ID. They name a patient by **enrollment number** (`home.enrollment.enrollment_no`: #1 to #48 in order of discharge, which is unique in this data), or by description. This reads the same on any machine (changed in review). `make walkthrough PATIENT=n` takes an enrollment number.
+- **Device ID:** a device serial number identifies the patient too, so `device_id` was removed from `home.enrollment`. It stays only in the raw export lines.
+- **Phase 1 exploration:** `make explore` now prints example resources with identifying fields, narratives and reference targets withheld, and birth and death dates cut to the year. `make walkthrough` takes a study ID (`SID=...`) and no longer prints the bundle file name, which Synthea builds from the patient's name. The Makefile and the walkthrough doc no longer contain a record number.
+- **Earlier commits:** DECISIONS.md, the Makefile and the walkthrough doc in Phase 1–5 commits contain record numbers (40 eight-character prefixes and one full record number), all synthetic. They're removed from the current files. Git history isn't rewritten. *(Open question: rewrite history before publishing the repo?)*
+- **Limitation:** service dates (delivery, discharge, readings, death) remain in the clinical and alert tables, because the alert workflow runs on days since discharge. Under HIPAA Safe Harbor those dates count as identifiers too. Here they're kept and documented, not removed.
+
+### D31. No home-monitoring consent: alerts are held back, with the reason recorded
+- **How it works:** the rules still run on these patients' readings, so `alerts.validation_result` stays complete for audit. Every alert for a patient whose `home.enrollment.consent_home_monitoring` is false gets `status = 'held_back'`. `alerts.alert_hold` records, per alert:
+  - the reason (`no_home_monitoring_consent`);
+  - what the status would have been;
+  - where the consent decision came from (the roster file and line).
+- **Who sees held alerts:** they never reach the nurse's list. A nurse can't open one, or use one to look up contact details. A nurse viewing the patient's timeline sees clinical readings only, with `home_readings_withheld = 'no_home_monitoring_consent'`. Engineers can still explain a held alert, and the explanation shows the hold. The privacy officer sees all holds.
+- **Carry-forward from Phase 5, answered:** under rules v1, the 4 non-consenting patients with alerts had 31 alerts (29 elevated, 2 severe). Under rules v2, they have 6. **All 6 are held back**: 4 elevated (4 patients) and 2 severe (2 patients), each with its reason recorded. All 6 would otherwise have been open. The 25-alert drop from 31 to 6 is the v2 elevated-rule change (D26), not consent gating. The fifth non-consenting patient has no alerts under either version.
+- **Safety note:** this holds back severe-range alerts too, as R7 asks. **Kept in review.** A real service would need a separate path for a severe reading from someone who hasn't consented to home monitoring. That's a clinical-governance decision outside this project, and it's listed in the README's limitations.
+- **Flagged for policy review** (added in review): the count of held severe alerts, with no patient details, is flagged `POLICY_REVIEW`. It appears in three places:
+  - the alert run's output;
+  - `data/out/reports/alerts_latest.json`, the alert part of the Phase 6 quality report;
+  - the privacy officer's `read_holds` summary.
+
+  On this data that's 2 severe alerts. The summary gives counts by rule and severity only. The per-alert list, which the privacy officer also sees, identifies patients by study ID.
+- **Engineer explanations of held alerts** (confirmed in review): on the real data, all 6 identify the patient only by study ID and contain none of the leak check's catalogued identifiers. Each was logged as an allowed `explain_alert` with the study ID. A test checks the same.
+
+### D32. Every read goes through an access layer with a role policy and an access log
+- **Roles and policy:** roles are simulated (no real authentication, per scope). `config/access.toml` sets what each may do:
+  - **nurse:** list alerts, read an alert (alert, threshold, the readings behind it, recent readings, no lineage), read a timeline, read contact details;
+  - **engineer:** list alerts, and explain an alert with full lineage;
+  - **privacy officer:** read the access log, and read held-back alerts.
+- **Access log:** every call, allowed, denied or not found, is written to `audit.access_log` with actor, role, action, resource, study ID, outcome, and a reason. A test runs every action for every role and checks the log matches call for call.
+- **Contact details:** they live only in the restricted `phi.patient_contact`, as a display name and phone number (minimum necessary), built by `make privacy` for the 48 cohort patients.
+  - A nurse gets them only with `read_contact(study_id, alert_id)`, and only when that alert is for the same patient and isn't held back.
+  - The alert ID becomes the logged reason ("acting on ALR-..."), so no free-text purpose, which could contain identifying details, ever reaches the log. A test checks the log never contains the returned name or phone.
+- **For Phase 7:** the access layer is what Phase 7's API calls. Its `render_*` functions build each response without logging, so the leak check can inspect them.
+
+### D33. Restricted zones, and a leak check over everything else
+- **The zones:**
+  - **Restricted:** the `raw` and `phi` schemas, `data/raw/` (Synthea bundles), `data/generated/` (the vendor's exports and the augmentation bundle, keyed by record number), and `data/secrets/`.
+  - **Not restricted:** everything else (`ops`, `cohort`, `home`, `timeline`, `alerts`, `audit`, `data/out/`, tracked files) must identify patients only by study ID.
+- **Bookkeeping moved to `raw`:** writing the leak check exposed that Phase 2's per-file and per-resource FHIR bookkeeping wasn't safe in `ops`. Synthea names each bundle file after the patient (name plus record number), and a Patient's `resource_id` is the record number. So `load_file`, `load_rejection` and `resource_change` moved from `ops` to `raw`. Existing databases are migrated on connect. `ops` keeps only per-load counts and errors, and home-export line changes.
+- **Logs:** each pipeline step's console output is also kept under `data/out/logs/`, so the logs can be checked too.
+- **What the leak check scans:** it builds a catalogue of identifying values from the restricted zones:
+  - record numbers, and their 8-character prefixes;
+  - patient and clinician name tokens;
+  - phones, and SSN, licence and passport numbers;
+  - full names, addresses and mothers' maiden names;
+  - each patient's birth date, checked only against that patient's own rows.
+
+  It then scans every table row outside the restricted zones, every access-layer response for every alert and enrolled patient (as nurse and as engineer), the holds, the access log, every file under `data/out/`, and every tracked file. Findings name the location and the kind, never the value. The report is written to `data/out/privacy/leak_check.json`, and the check exits non-zero on any finding.
+- **On this data:**
+  - **First run:** the only finding was the 40 record-number prefixes in DECISIONS.md. They're now replaced by enrollment numbers (D30).
+  - **Uncommitted files** (added in review): the check now also scans files git would commit but doesn't track yet, not just tracked ones. That caught two leaks introduced in this phase, which are now replaced with made-up values:
+    - a real Synthea name token used as an example in `leak_check.py`;
+    - the walkthrough patient's real record number used as test input in `test_privacy.py`.
+  - **After the fixes:** it passes. It scanned 4,465 table rows, 165 access-layer responses, 10 output files and 39 repository files.
+- **Tests:**
+  - The whole pipeline, run on FHIR with realistic names, phones, SSNs and addresses, passes the check.
+  - A name planted in a table, a phone in an error message, and a record number in a log file are each caught, and the report doesn't repeat them.
+
+### D34. What Phase 5b didn't do
+- **Pseudonymity, not anonymity:** the study ID is a pseudonym. Anyone with the key and a record number can recompute it.
+- **Separation is logical, not enforced:** DuckDB has no roles, so restricted means "only boundary code reads it", enforced by convention and checked by the leak check. A production system would put `raw` and `phi` behind database permissions or in a separate store.
+- **Clinical dates stay** (see D30).
+
+### Carried forward to Phase 6
+- **Held severe alerts in the quality report:** the per-load quality report must include the held-back alert summary from `ppbp.privacy.access.hold_summary` (counts only, no patient details), with held severe-range alerts flagged `POLICY_REVIEW` (D31).

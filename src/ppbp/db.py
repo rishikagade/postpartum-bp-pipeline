@@ -1,13 +1,20 @@
 """DuckDB connection and schema.
 
 Schemas:
-    raw       restricted zone: unmodified FHIR JSON (which holds identifying data, D6) and home export lines.
-              Downstream tables copy coded and ID fields out of it; nothing else reads it directly.
-    ops       load bookkeeping: what came in, what changed, what was rejected and why.
+    raw       RESTRICTED: unmodified FHIR JSON (which holds identifying data, D6) and home export
+              lines (keyed by medical record number). Only boundary code reads it, and swaps the
+              record number for a study ID on the way out (D30).
+    phi       RESTRICTED: record number <-> study ID, and contact details for the logged lookup.
+    ops       load bookkeeping that identifies no one: per-load counts and errors, home export
+              line changes. Per-file and per-resource FHIR lineage lives in raw (D33).
     cohort    the postpartum cohort (Phase 3): who is in, who is out and why.
     home      cleaned home BP readings and enrollment (Phase 4), plus every rejected line.
     timeline  one BP timeline per cohort patient: home and clinical readings (Phase 4).
     alerts    rule results per record, alerts, and their evidence (Phase 5).
+    audit     who read what, when, and whether it was allowed (Phase 5b).
+
+Everything outside raw and phi identifies patients only by study ID (SID-...), never by
+record number, name or contact detail. `make leak-check` verifies this (D33).
 """
 
 from __future__ import annotations
@@ -25,6 +32,8 @@ CREATE SCHEMA IF NOT EXISTS cohort;
 CREATE SCHEMA IF NOT EXISTS home;
 CREATE SCHEMA IF NOT EXISTS timeline;
 CREATE SCHEMA IF NOT EXISTS alerts;
+CREATE SCHEMA IF NOT EXISTS phi;
+CREATE SCHEMA IF NOT EXISTS audit;
 
 CREATE SEQUENCE IF NOT EXISTS ops.load_id_seq START 1;
 
@@ -43,8 +52,9 @@ CREATE TABLE IF NOT EXISTS ops.load_run (
     error        VARCHAR
 );
 
--- One row per input file per load. The file hash pins exactly what was read.
-CREATE TABLE IF NOT EXISTS ops.load_file (
+-- One row per input file per load. The file hash pins exactly what was read. RESTRICTED (D33):
+-- Synthea names each bundle file after the patient, so file paths are identifying.
+CREATE TABLE IF NOT EXISTS raw.load_file (
     load_id      INTEGER NOT NULL,
     source_file  VARCHAR NOT NULL,          -- relative to the project root
     file_sha256  VARCHAR NOT NULL,
@@ -56,7 +66,8 @@ CREATE TABLE IF NOT EXISTS ops.load_file (
 );
 
 -- Anything not loaded is recorded here with a reason; nothing is dropped silently.
-CREATE TABLE IF NOT EXISTS ops.load_rejection (
+-- RESTRICTED (D33): it names source files.
+CREATE TABLE IF NOT EXISTS raw.load_rejection (
     load_id      INTEGER NOT NULL,
     source_file  VARCHAR NOT NULL,
     entry_index  INTEGER,                   -- NULL when the whole file was rejected
@@ -65,7 +76,8 @@ CREATE TABLE IF NOT EXISTS ops.load_rejection (
 );
 
 -- Every new or changed resource, per load. Unchanged resources are counted, not listed.
-CREATE TABLE IF NOT EXISTS ops.resource_change (
+-- RESTRICTED (D33): a Patient's resource_id is the record number.
+CREATE TABLE IF NOT EXISTS raw.resource_change (
     load_id       INTEGER NOT NULL,
     resource_type VARCHAR NOT NULL,
     resource_id   VARCHAR NOT NULL,
@@ -116,7 +128,7 @@ CREATE TABLE IF NOT EXISTS cohort.build_run (
 
 -- IDs and coded fields only (DECISIONS D6). Every *_id points at a resource in the raw store.
 CREATE TABLE IF NOT EXISTS cohort.postpartum_cohort (
-    patient_id            VARCHAR PRIMARY KEY,
+    patient_id            VARCHAR PRIMARY KEY,    -- study ID (SID-...), not the record number (D30)
     build_id              INTEGER NOT NULL,
     delivery_procedure_id VARCHAR NOT NULL,
     delivery_code         VARCHAR NOT NULL,
@@ -176,11 +188,11 @@ CREATE TABLE IF NOT EXISTS home.clean_run (
 );
 
 CREATE TABLE IF NOT EXISTS home.enrollment (
-    patient_id              VARCHAR PRIMARY KEY,
+    patient_id              VARCHAR PRIMARY KEY,   -- study ID (D30); the device ID stays in raw
+    enrollment_no           INTEGER NOT NULL UNIQUE, -- 1..N in discharge order: the same on any machine (D30)
     clean_id                INTEGER NOT NULL,
-    device_id               VARCHAR NOT NULL,
     timezone                VARCHAR NOT NULL,
-    consent_home_monitoring BOOLEAN NOT NULL,  -- used for gating in Phase 5b, not here
+    consent_home_monitoring BOOLEAN NOT NULL,  -- gates alerting (Phase 5b, D31)
     discharge_at            TIMESTAMPTZ NOT NULL,
     monitoring_end          TIMESTAMPTZ NOT NULL,  -- discharge + monitoring days, or death if earlier
     deceased_at             TIMESTAMPTZ,
@@ -295,7 +307,7 @@ CREATE TABLE IF NOT EXISTS alerts.alert (
     days_since_discharge DOUBLE NOT NULL,       -- at triggered_at
     threshold            VARCHAR NOT NULL,      -- what was crossed, in words
     summary              VARCHAR NOT NULL,
-    status               VARCHAR NOT NULL,      -- 'open' | 'closed', as of the end of monitoring
+    status               VARCHAR NOT NULL,      -- 'open' | 'closed' (end of monitoring) | 'held_back' (D31)
     closed_at            TIMESTAMPTZ            -- set when a rule closes the alert (BP_ELEVATED)
 );
 
@@ -319,6 +331,46 @@ FROM alerts.rule r
 LEFT JOIN alerts.validation_result v USING (rule_id, rule_version)
 GROUP BY ALL;
 
+-- Alerts held back from the nurse's list, one row per alert, with the reason (D31).
+CREATE TABLE IF NOT EXISTS alerts.alert_hold (
+    alert_id       VARCHAR PRIMARY KEY,
+    run_id         INTEGER NOT NULL,
+    reason         VARCHAR NOT NULL,           -- 'no_home_monitoring_consent'
+    status_if_held VARCHAR NOT NULL,           -- what the status would have been: 'open' | 'closed'
+    detail         VARCHAR NOT NULL            -- where the consent decision came from
+);
+
+-- Phase 5b, RESTRICTED. Record number <-> study ID. Nothing outside raw and phi holds a record number.
+CREATE TABLE IF NOT EXISTS phi.patient_key (
+    study_id        VARCHAR PRIMARY KEY,
+    patient_id      VARCHAR NOT NULL UNIQUE,   -- FHIR Patient.id = medical record number
+    key_fingerprint VARCHAR NOT NULL           -- which pseudonym key made study_id
+);
+
+-- Phase 5b, RESTRICTED. Minimum contact details for the nurse's logged lookup (cohort only).
+CREATE TABLE IF NOT EXISTS phi.patient_contact (
+    study_id        VARCHAR PRIMARY KEY,
+    display_name    VARCHAR NOT NULL,          -- prefix, given and family name from the official name
+    phone           VARCHAR,
+    source_hash     VARCHAR NOT NULL           -- content hash of the FHIR Patient version it came from
+);
+
+-- Phase 5b. Every read through the access layer, allowed or denied. IDs only, never PHI.
+CREATE SEQUENCE IF NOT EXISTS audit.access_id_seq START 1;
+
+CREATE TABLE IF NOT EXISTS audit.access_log (
+    access_id     INTEGER PRIMARY KEY,
+    accessed_at   TIMESTAMPTZ NOT NULL,
+    actor         VARCHAR NOT NULL,            -- simulated user name, e.g. 'nurse.1'
+    role          VARCHAR NOT NULL,            -- 'nurse' | 'engineer' | 'privacy_officer'
+    action        VARCHAR NOT NULL,            -- e.g. 'list_alerts', 'read_timeline', 'read_contact'
+    resource_type VARCHAR NOT NULL,
+    resource_id   VARCHAR,
+    patient_id    VARCHAR,                     -- study ID
+    outcome       VARCHAR NOT NULL,            -- 'allowed' | 'denied' | 'not_found'
+    reason        VARCHAR                      -- stated purpose (contact lookups) or why denied
+);
+
 -- Every delivery patient not in the cohort, with the reason.
 -- Reasons: died_before_discharge, delivery_encounter_missing, no_hdp_not_augmented.
 CREATE TABLE IF NOT EXISTS cohort.exclusion (
@@ -331,6 +383,24 @@ CREATE TABLE IF NOT EXISTS cohort.exclusion (
 """
 
 
+# Tables that moved schema. Each runs once on a database that still has the old table.
+MIGRATIONS = [
+    # Phase 5b (D33): FHIR file and resource lineage names patients, so it moved from ops to raw.
+    ("ops", "load_file", "raw"),
+    ("ops", "load_rejection", "raw"),
+    ("ops", "resource_change", "raw"),
+]
+
+
+def migrate(con: duckdb.DuckDBPyConnection) -> None:
+    for old_schema, table, new_schema in MIGRATIONS:
+        exists = con.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema = ? "
+                             "AND table_name = ?", [old_schema, table]).fetchone()[0]
+        if exists:
+            con.execute(f"INSERT INTO {new_schema}.{table} SELECT * FROM {old_schema}.{table}")
+            con.execute(f"DROP TABLE {old_schema}.{table}")
+
+
 def connect(path: Path = DB_PATH) -> duckdb.DuckDBPyConnection:
     path.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(path))
@@ -338,4 +408,5 @@ def connect(path: Path = DB_PATH) -> duckdb.DuckDBPyConnection:
     # which avoids a pytz dependency.
     con.execute("SET TimeZone = 'UTC'")
     con.execute(SCHEMA)
+    migrate(con)
     return con

@@ -60,7 +60,7 @@ def load_raw(con: duckdb.DuckDBPyConnection, files: list[Path]) -> RawStats:
         data = path.read_bytes()
         lines = data.decode().splitlines()
         stats.records_in += len(lines)
-        con.execute("INSERT INTO ops.load_file VALUES (?, ?, ?, 'home_export', ?, 'loaded', NULL)",
+        con.execute("INSERT INTO raw.load_file VALUES (?, ?, ?, 'home_export', ?, 'loaded', NULL)",
                     [load_id, source, hashlib.sha256(data).hexdigest(), len(lines)])
 
         old = dict(con.execute("SELECT line_no, line_sha256 FROM raw.home_line_current WHERE source_file = ?",
@@ -102,8 +102,7 @@ def current_lines(con: duckdb.DuckDBPyConnection, source: str) -> list[tuple[int
 
 @dataclass(frozen=True)
 class Enrollment:
-    patient_id: str
-    device_id: str
+    patient_id: str               # study ID (D30)
     timezone: str
     consent: bool
     discharge_at: datetime        # aware UTC
@@ -237,27 +236,33 @@ def deduplicate(cands: list[Candidate], cfg: dict[str, Any]) -> tuple[list[Candi
 
 def load_enrollment(con: duckdb.DuckDBPyConnection, source: str, monitoring_days_max: int
                     ) -> tuple[dict[str, Enrollment], list[tuple]]:
-    """Roster lines joined to the cohort (the source of truth for discharge and death)."""
-    cohort = {r[0]: r[1:] for r in con.execute(
-        "SELECT patient_id, discharge_at::TIMESTAMP, deceased_at::TIMESTAMP FROM cohort.postpartum_cohort").fetchall()}
+    """Roster lines joined to the cohort (the source of truth for discharge and death).
+
+    The vendor's roster is keyed by record number. The result is keyed the same way, for looking
+    up incoming readings, but every Enrollment carries the study ID, which is all that's written
+    out (D30). Problems are reported by line number, never by record number."""
+    cohort = {r[0]: r[1:] for r in con.execute("""
+        SELECT k.patient_id, c.patient_id, c.discharge_at::TIMESTAMP, c.deceased_at::TIMESTAMP
+        FROM cohort.postpartum_cohort c JOIN phi.patient_key k ON k.study_id = c.patient_id""").fetchall()}
     out, problems = {}, []
     for line_no, _, line in current_lines(con, source):
         rec = json.loads(line)
-        pid = rec["patient_ref"]
-        if pid not in cohort:
-            problems.append((line_no, "enrollment_not_in_cohort", pid))
+        mrn = rec["patient_ref"]
+        if mrn not in cohort:
+            problems.append((line_no, "enrollment_not_in_cohort"))
             continue
         if not 1 <= rec["monitoring_days"] <= monitoring_days_max:
-            problems.append((line_no, "enrollment_bad_monitoring_days", str(rec["monitoring_days"])))
+            problems.append((line_no, "enrollment_bad_monitoring_days"))
             continue
-        discharge, deceased = (d.replace(tzinfo=UTC) if d else None for d in cohort[pid])
+        study, *dates = cohort[mrn]
+        discharge, deceased = (d.replace(tzinfo=UTC) if d else None for d in dates)
         # Through the end of the last postpartum day, in the patient's local time.
         tz = ZoneInfo(rec["timezone"])
         last_day = discharge.astimezone(tz).date() + timedelta(days=rec["monitoring_days"] + 1)
         end = datetime.combine(last_day, time(0, 0), tz).astimezone(UTC)
         if deceased is not None:
             end = min(end, deceased)
-        out[pid] = Enrollment(pid, rec["device_id"], rec["timezone"], bool(rec["consent_home_monitoring"]),
+        out[mrn] = Enrollment(study, rec["timezone"], bool(rec["consent_home_monitoring"]),
                               discharge, end, deceased, source, line_no)
     return out, problems
 
@@ -269,7 +274,7 @@ def postpartum_day(measured: datetime, discharge: datetime, tz: ZoneInfo) -> int
 CLINICAL_SQL = """
 WITH obs AS (
     SELECT v.resource_id AS record_id,
-           regexp_extract(v.resource_json->>'$.subject.reference', '([^/:]+)$', 1) AS patient_id,
+           regexp_extract(v.resource_json->>'$.subject.reference', '([^/:]+)$', 1) AS record_number,
            (v.resource_json->>'$.effectiveDateTime')::TIMESTAMPTZ AS measured_at,
            v.resource_json->'$.component' AS components
     FROM raw.fhir_resource_current c
@@ -277,13 +282,14 @@ WITH obs AS (
     WHERE c.resource_type = 'Observation'
       AND list_contains(json_extract_string(v.resource_json, '$.code.coding[*].code'), $panel)
 )
-SELECT o.patient_id, o.record_id, o.measured_at::TIMESTAMP,
+SELECT k.study_id, o.record_id, o.measured_at::TIMESTAMP,
        list_filter(json_transform(o.components, '[{"code":{"coding":[{"code":"VARCHAR"}]},"valueQuantity":{"value":"DOUBLE"}}]'),
                    x -> x.code.coding[1].code = $systolic)[1].valueQuantity.value AS systolic,
        list_filter(json_transform(o.components, '[{"code":{"coding":[{"code":"VARCHAR"}]},"valueQuantity":{"value":"DOUBLE"}}]'),
                    x -> x.code.coding[1].code = $diastolic)[1].valueQuantity.value AS diastolic
 FROM obs o
-JOIN home.enrollment e USING (patient_id)
+JOIN phi.patient_key k ON k.patient_id = o.record_number      -- record number -> study ID (D30)
+JOIN home.enrollment e ON e.patient_id = k.study_id
 WHERE o.measured_at BETWEEN e.discharge_at - to_days($lookback) AND e.monitoring_end
 """
 
@@ -310,10 +316,16 @@ def clean(con: duckdb.DuckDBPyConnection, cfg: dict[str, Any], enrollment_source
     enr, problems = load_enrollment(con, enrollment_source, cfg["monitoring"]["max_days"])
     stats.enrollment_problems = len(problems)
     if problems:
-        raise RuntimeError(f"Enrollment roster has {len(problems)} unusable lines, e.g. {problems[0]}")
+        raise RuntimeError(f"Enrollment roster has {len(problems)} unusable lines, e.g. line {problems[0][0]}: "
+                           f"{problems[0][1]}")
+    # Enrollment number: discharge order, which doesn't depend on the pseudonym key, so documents
+    # can name a patient the same way on any machine (D30). Discharge times are unique in this data;
+    # the roster line breaks any tie.
+    ordered = sorted(enr.values(), key=lambda e: (e.discharge_at, e.line_no))
     con.executemany("INSERT INTO home.enrollment VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
-        (e.patient_id, stats.clean_id, e.device_id, e.timezone, e.consent, e.discharge_at, e.monitoring_end,
-         e.deceased_at, e.source_file, e.line_no) for e in enr.values()])
+        (e.patient_id, n, stats.clean_id, e.timezone, e.consent, e.discharge_at, e.monitoring_end,
+         e.deceased_at, e.source_file, e.line_no) for n, e in enumerate(ordered, start=1)])
+    by_study = {e.patient_id: e for e in enr.values()}
 
     cands, rejected = [], []
     for line_no, line_hash, line in current_lines(con, readings_source):
@@ -327,7 +339,8 @@ def clean(con: duckdb.DuckDBPyConnection, cfg: dict[str, Any], enrollment_source
             rejected.append((rid, None, None, "invalid_json", str(exc), None, line_no, line_hash))
         except Rejected as rej:
             sub = record.get("submission_id") if isinstance(record, dict) else None
-            pid = record.get("patient_ref") if isinstance(record, dict) and record.get("patient_ref") in enr else None
+            known = enr.get(record.get("patient_ref")) if isinstance(record, dict) else None
+            pid = known.patient_id if known else None   # study ID, never the record number
             rejected.append((rid, sub, pid, rej.reason, rej.detail, None, line_no, line_hash))
 
     kept, dupes = deduplicate(cands, cfg)
@@ -337,7 +350,7 @@ def clean(con: duckdb.DuckDBPyConnection, cfg: dict[str, Any], enrollment_source
 
     rows = []
     for k in kept:
-        e = enr[k.patient_id]
+        e = by_study[k.patient_id]
         tz = ZoneInfo(e.timezone)
         rows.append((k.reading_id, stats.clean_id, k.submission_id, k.patient_id, k.measured_at,
                      k.measured_at_source, k.received_at,
@@ -361,7 +374,7 @@ def clean(con: duckdb.DuckDBPyConnection, cfg: dict[str, Any], enrollment_source
         if systolic is None or diastolic is None:
             stats.clinical_skipped += 1   # a panel without both components can't be plotted
             continue
-        e = enr[pid]
+        e = by_study[pid]
         m = measured.replace(tzinfo=UTC)
         timeline.append((pid, "clinical", record_id, m, postpartum_day(m, e.discharge_at, ZoneInfo(e.timezone)),
                          (m - e.discharge_at).total_seconds() / 3600, systolic, diastolic, []))

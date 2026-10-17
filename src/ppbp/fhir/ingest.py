@@ -74,8 +74,8 @@ class LoadStats:
 @dataclass
 class Staged:
     rows: list[dict[str, Any]] = field(default_factory=list)
-    files: list[tuple] = field(default_factory=list)       # ops.load_file rows minus load_id
-    rejections: list[tuple] = field(default_factory=list)  # ops.load_rejection rows minus load_id
+    files: list[tuple] = field(default_factory=list)       # raw.load_file rows minus load_id
+    rejections: list[tuple] = field(default_factory=list)  # raw.load_rejection rows minus load_id
     seen: dict[tuple[str, str], tuple[str, str, int]] = field(default_factory=dict)
 
     def reject(self, source: str, index: int | None, reason: str, detail: str = "") -> None:
@@ -144,7 +144,7 @@ SELECT s.*, c.content_hash AS old_hash,
 FROM stage s
 LEFT JOIN raw.fhir_resource_current c USING (resource_type, resource_id);
 
-INSERT INTO ops.resource_change
+INSERT INTO raw.resource_change
 SELECT $load_id, resource_type, resource_id, change, old_hash, content_hash
 FROM classified WHERE change <> 'unchanged';
 
@@ -185,10 +185,10 @@ def load_staged(con: duckdb.DuckDBPyConnection, staged: Staged, stats: LoadStats
     con.execute("DROP TABLE stage")
 
     if staged.files:
-        con.executemany("INSERT INTO ops.load_file VALUES (?, ?, ?, ?, ?, ?, ?)",
+        con.executemany("INSERT INTO raw.load_file VALUES (?, ?, ?, ?, ?, ?, ?)",
                         [(stats.load_id, *f) for f in staged.files])
     if staged.rejections:
-        con.executemany("INSERT INTO ops.load_rejection VALUES (?, ?, ?, ?, ?)",
+        con.executemany("INSERT INTO raw.load_rejection VALUES (?, ?, ?, ?, ?)",
                         [(stats.load_id, *r) for r in staged.rejections])
 
 

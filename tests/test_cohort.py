@@ -87,8 +87,14 @@ def _config(tmp: Path, **overrides: str) -> Path:
 
 
 def _query(db: Path, sql: str) -> list[tuple]:
+    """Query with cohort tables shown by fixture name (record number), not study ID, for readable
+    assertions. test_cohort_tables_hold_only_study_ids checks the real tables."""
     with duckdb.connect(str(db), read_only=True) as con:
         con.execute("SET TimeZone = 'UTC'")
+        for table, view in (("cohort.postpartum_cohort", "pc_by_mrn"), ("cohort.exclusion", "ex_by_mrn")):
+            con.execute(f"""CREATE TEMP VIEW {view} AS SELECT t.* REPLACE (k.patient_id AS patient_id)
+                            FROM {table} t JOIN phi.patient_key k ON k.study_id = t.patient_id""")
+        sql = sql.replace("cohort.postpartum_cohort", "pc_by_mrn").replace("cohort.exclusion", "ex_by_mrn")
         return con.execute(sql).fetchall()
 
 
@@ -199,3 +205,16 @@ def test_fraction_zero_augments_no_one(store) -> None:
 def test_fraction_outside_zero_to_one_is_rejected(store) -> None:
     with pytest.raises(ValueError, match="fraction"):
         build(store["db"], _config(store["tmp"], **{"fraction = 0.5": "fraction = 1.5"}), store["bundle"])
+
+
+def test_cohort_tables_hold_only_study_ids(store, pseudonym_key) -> None:
+    from ppbp.privacy.pseudonym import study_id
+
+    build(store["db"], CONFIG_PATH, store["bundle"])
+    with duckdb.connect(str(store["db"]), read_only=True) as con:
+        ids = [r[0] for r in con.execute("SELECT patient_id FROM cohort.postpartum_cohort "
+                                         "UNION ALL SELECT patient_id FROM cohort.exclusion").fetchall()]
+        mapping = dict(con.execute("SELECT patient_id, study_id FROM phi.patient_key").fetchall())
+    assert ids and all(i.startswith("SID-") for i in ids)
+    assert "native" not in ids
+    assert mapping["native"] == study_id("native", pseudonym_key) in ids

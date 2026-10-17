@@ -1,10 +1,15 @@
 PYTHON ?= python3.11
+SHELL := /bin/bash
+.SHELLFLAGS := -o pipefail -c
+# Each pipeline step's console output is also kept in data/out/logs/, which the leak check scans.
+LOGS := data/out/logs
+LOG = mkdir -p $(LOGS) && $(PY)
 VENV := .venv
 PY := $(VENV)/bin/python
 # Editable-install .pth files can get the macOS "hidden" flag, which Python skips.
 export PYTHONPATH := src
 
-.PHONY: setup data explore walkthrough ingest cohort home alerts explain test
+.PHONY: setup data explore walkthrough ingest cohort home alerts explain privacy leak-check test
 
 # One-time setup: virtualenv, dependencies, and the Synthea sample download.
 setup:
@@ -18,34 +23,45 @@ data:
 
 # Phase 1: summarize the FHIR resources and the blood pressure observations.
 explore:
-	$(PY) -m ppbp.fhir.explore
+	$(LOG) -m ppbp.fhir.explore | tee data/out/explore_summary.txt
 
-# Phase 1: plain-language timeline of the walkthrough patient.
+# Phase 1: plain-language timeline of one enrolled patient (needs `make home` first).
+# PATIENT is the enrollment number: #1 is the earliest discharge, the same on any machine (D30).
+PATIENT ?= 47
 walkthrough:
-	$(PY) -m ppbp.fhir.explore --patient REMOVED-RECORD-NUMBER
+	$(PY) -m ppbp.fhir.explore --patient $(PATIENT)
 
 # Phase 2: load the FHIR bundles into DuckDB (data/ppbp.duckdb). Safe to re-run.
 ingest:
-	$(PY) -m ppbp.fhir.ingest
+	$(LOG) -m ppbp.fhir.ingest | tee $(LOGS)/ingest.log
 
 # Phase 3: postpartum cohort (config/cohort.toml). Loads its augmentation bundle via ingest.
 cohort:
-	$(PY) -m ppbp.cohort.build
+	$(LOG) -m ppbp.cohort.build | tee $(LOGS)/cohort.log
 
 # Phase 4: simulate home BP readings, load and clean them, build timelines, and reconcile
 # what was injected against what cleaning did (config/home.toml).
 home:
-	$(PY) -m ppbp.home.simulate
-	$(PY) -m ppbp.home.load
-	$(PY) -m ppbp.home.reconcile
+	$(LOG) -m ppbp.home.simulate | tee $(LOGS)/home_simulate.log
+	$(LOG) -m ppbp.home.load | tee $(LOGS)/home_load.log
+	$(LOG) -m ppbp.home.reconcile | tee $(LOGS)/home_reconcile.log
 
 # Phase 5: run the alert rules (config/rules.toml) and list open alerts, most urgent first.
 alerts:
-	$(PY) -m ppbp.alerts.evaluate
+	$(LOG) -m ppbp.alerts.evaluate | tee $(LOGS)/alerts.log
 
 # Phase 5: trace one alert to its rule version and raw records: make explain ID=ALR-...
 explain:
 	$(PY) -m ppbp.alerts.explain $(ID)
+
+# Phase 5b: rebuild the restricted contact table, then check nothing identifying leaked.
+privacy:
+	$(LOG) -m ppbp.privacy.phi | tee $(LOGS)/privacy.log
+	$(MAKE) -s leak-check
+
+# Phase 5b: scan tables, logs, reports, access-layer responses and tracked files for identifiers.
+leak-check:
+	$(LOG) -m ppbp.privacy.leak_check | tee $(LOGS)/leak_check.log
 
 test:
 	$(PY) -m pytest -q

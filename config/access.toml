@@ -1,0 +1,15 @@
+# Who may do what through the access layer (DECISIONS D32). Roles are simulated: there is no
+# real authentication in scope. Every call is logged to audit.access_log, allowed or not.
+version = "1"
+
+[roles.nurse]
+# Open alerts and their context, patient timelines, and contact details tied to an alert.
+actions = ["list_alerts", "read_alert", "read_timeline", "read_contact"]
+
+[roles.engineer]
+# Full lineage for debugging: rule versions, raw lines (redacted), load and file hashes.
+actions = ["list_alerts", "explain_alert"]
+
+[roles.privacy_officer]
+# Who read what, and which alerts were held back for consent. No clinical values.
+actions = ["read_access_log", "read_holds"]

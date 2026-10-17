@@ -37,6 +37,7 @@ import duckdb
 from ppbp import DATA_DIR, DB_PATH, PROJECT_ROOT
 from ppbp.db import connect
 from ppbp.fhir.ingest import canonical_hash, run_load
+from ppbp.privacy.pseudonym import ensure_study_ids
 
 Resource = dict[str, Any]
 
@@ -283,19 +284,22 @@ def write_cohort(con: duckdb.DuckDBPyConnection, plan: CohortPlan, conditions: l
         build_id = con.execute("SELECT nextval('cohort.build_id_seq')").fetchone()[0]
         con.execute("DELETE FROM cohort.postpartum_cohort")
         con.execute("DELETE FROM cohort.exclusion")
+        # Selection above ran on record numbers inside the raw zone. What leaves it uses study IDs (D30).
+        sid = ensure_study_ids(con, [d.patient_id for d in plan.native + plan.augmented]
+                               + [d.patient_id for d, _, _ in plan.exclusions])
 
-        rows = [(d.patient_id, build_id, d.procedure_id, d.delivery_code, d.encounter_id,
+        rows = [(sid[d.patient_id], build_id, d.procedure_id, d.delivery_code, d.encounter_id,
                  d.delivery_start, d.discharge_at, "native", *d.native_hdp, d.deceased_at, d.prior_hdp) for d in plan.native]
         for d, c in zip(plan.augmented, conditions, strict=True):
             onset = datetime.fromisoformat(c["onsetDateTime"]).replace(tzinfo=None)
-            rows.append((d.patient_id, build_id, d.procedure_id, d.delivery_code, d.encounter_id,
+            rows.append((sid[d.patient_id], build_id, d.procedure_id, d.delivery_code, d.encounter_id,
                          d.delivery_start, d.discharge_at, "augmented", c["id"], cfg.augmentation_code, onset,
                          d.deceased_at, d.prior_hdp))
         if rows:
             con.executemany("INSERT INTO cohort.postpartum_cohort VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
         if plan.exclusions:
             con.executemany("INSERT INTO cohort.exclusion VALUES (?, ?, ?, ?, ?)",
-                            [(d.patient_id, build_id, d.procedure_id, reason, detail)
+                            [(sid[d.patient_id], build_id, d.procedure_id, reason, detail)
                              for d, reason, detail in plan.exclusions])
 
         con.execute(

@@ -19,6 +19,7 @@ make cohort       # Phase 3: build the postpartum cohort (config/cohort.toml)
 make home         # Phase 4: simulate, load and clean home BP readings; build timelines
 make alerts       # Phase 5: run the alert rules (config/rules.toml); list open alerts
 make explain ID=ALR-...  # Phase 5: trace one alert to its rule version and raw records
+make privacy      # Phase 5b: rebuild the restricted contact table, then run the leak check
 ```
 
 The database goes to `data/ppbp.duckdb`. If the project is in an iCloud-synced folder, keep `data/` off iCloud with `mv data data.nosync && ln -s data.nosync data` (DECISIONS D11), or set `PPBP_DB_PATH` to put the database elsewhere.
@@ -64,6 +65,19 @@ The per-patient comparison is in DECISIONS D26.
 The simulated protocol follows the Heart Safe Motherhood program: readings twice daily for 10 days after discharge [[11]]. That covers ACOG's 7–10 day check [[4]]. The length can be set up to 42 days; a hospital-level program has monitored patients until 6 weeks postpartum [[12]].
 
 The messiness injected into the readings (dropouts, missed readings, duplicates, late arrivals, wrong time zones, impossible values, unit errors) uses assumed rates, recorded in DECISIONS D21. On the 48-patient cohort, `make home` produces 777 submissions. Cleaning accepts 737 and rejects 40, each with a reason. It also checks, line by line, that every injected problem was handled (DECISIONS D22).
+
+## Privacy (synthetic data, handled as if it were real)
+
+- **Study IDs:** outside two restricted zones, patients appear only as a study ID (`SID-...`), a keyed hash of the record number. The key never enters git. The record-number mapping and contact details live in the restricted `phi` schema. The raw FHIR and home-export data live in `raw` (DECISIONS D30, D33).
+- **Consent:** alerts for patients without home-monitoring consent are held back from the nurse's list, with the reason recorded per alert. On this cohort that's 6 of 60 alerts (D31).
+- **Access:** every read of an alert, timeline or contact detail goes through an access layer. It checks the role's permissions (`config/access.toml`) and logs who read what and when, including denied attempts (D32).
+- **Leak check:** `make leak-check` scans every table, log, report, access-layer response and tracked file for record numbers, names, phones, identifiers, addresses and birth dates. It fails if any are found (D33).
+
+## Limitations
+
+- **Held severe alerts.** Alerts for patients without home-monitoring consent are held back from the nurse's list, as R7 requires. That includes severe-range readings: 2 on this cohort, flagged for policy review in the alert report and in the privacy officer's view. A real service would need a safety escalation path for a severe reading from someone who hasn't consented to home monitoring. That's a clinical-governance decision this project doesn't make (DECISIONS D31).
+- **Discharge time.** Discharge is the end of Synthea's delivery encounter, about an hour after delivery. Real postpartum stays are longer (D4).
+- **Clinical dates.** Clinical dates (delivery, discharge, readings) stay in the analytics and alert tables, because the alert workflow runs on days since discharge. They're documented rather than removed (D30).
 
 ## Project documents
 

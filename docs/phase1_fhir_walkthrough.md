@@ -54,7 +54,7 @@ One BP reading is **one Observation with two components**, not two separate Obse
 
 ## One patient, start to finish
 
-Patient `#47 (enrollment number)` (`make walkthrough`). She's referred to by ID only, a habit this project keeps even with synthetic data.
+Enrolled patient #47, the 47th of the 48 cohort patients in order of discharge (`make walkthrough`, or `make walkthrough PATIENT=47`). She's referred to only by enrollment number. Her FHIR `Patient.id` doubles as her medical record number, so since Phase 5b it isn't printed or committed anywhere. The enrollment number reads the same on any machine (DECISIONS D30).
 
 **Who she is.** A female patient born in 1974, living. Her bundle holds 913 resources, mostly Observations, Claims, and Procedures. The Patient resource carries name, address, and phone, which are the identifying fields Phase 5b moves into their own table.
 

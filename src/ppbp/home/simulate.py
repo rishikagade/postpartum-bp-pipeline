@@ -53,16 +53,22 @@ def round_half_up(x: float) -> int:
 
 @dataclass(frozen=True)
 class CohortPatient:
-    patient_id: str
+    patient_id: str               # medical record number: the vendor knows its patients (D30)
     discharge_at: datetime        # naive UTC
     deceased_at: datetime | None  # naive UTC
 
 
 def read_cohort(db_path: Path) -> list[CohortPatient]:
+    """The cohort as the home-monitoring vendor sees it: by record number.
+
+    The simulator stands in for an outside vendor that enrols real patients, so it reads the
+    restricted phi.patient_key mapping. Its exports are restricted raw input (D30), and the
+    pipeline swaps the record number for a study ID when it cleans them."""
     with connect(db_path) as con:
         rows = con.execute(
-            "SELECT patient_id, discharge_at::TIMESTAMP, deceased_at::TIMESTAMP "
-            "FROM cohort.postpartum_cohort ORDER BY patient_id"
+            "SELECT k.patient_id, c.discharge_at::TIMESTAMP, c.deceased_at::TIMESTAMP "
+            "FROM cohort.postpartum_cohort c JOIN phi.patient_key k ON k.study_id = c.patient_id "
+            "ORDER BY k.patient_id"
         ).fetchall()
     return [CohortPatient(*r) for r in rows]
 

@@ -207,8 +207,9 @@ def store(tmp_path: Path) -> dict:
             deceased = discharge + timedelta(days=3, hours=6) if i == 0 else None
             con.execute("INSERT INTO cohort.postpartum_cohort VALUES (?, 1, ?, '66348005', ?, ?, ?, 'native', ?, "
                         "'398254007', ?, ?, false)",
-                        [f"p{i:02d}", f"proc{i}", f"enc{i}", discharge - timedelta(hours=1), discharge,
+                        [f"SID-p{i:02d}", f"proc{i}", f"enc{i}", discharge - timedelta(hours=1), discharge,
                          f"hdp{i}", discharge - timedelta(days=30), deceased])
+            con.execute("INSERT INTO phi.patient_key VALUES (?, ?, 'test')", [f"SID-p{i:02d}", f"p{i:02d}"])
     out = tmp_path / "home"
     cfg = load_config(HOME_CONFIG)
     write_outputs(simulate(read_cohort(db), cfg), cfg, out)
@@ -269,9 +270,15 @@ def test_explain_alert_traces_down_to_the_raw_line(store) -> None:
             if item["record_type"] != "home_reading":
                 continue
             raw = item["raw"]
-            assert hashlib.sha256(raw["raw_line"].encode()).hexdigest() == raw["line_sha256"]
+            # The original line (raw zone) hashes to line_sha256; the response shows it redacted (D30).
+            original = _query(store["db"], "SELECT raw_line FROM raw.home_line_version WHERE source_file = ? "
+                              "AND line_no = ? AND line_sha256 = ?",
+                              [raw["source_file"], raw["line_no"], raw["line_sha256"]])[0][0]
+            assert hashlib.sha256(original.encode()).hexdigest() == raw["line_sha256"]
+            assert '"patient_ref": "p' in original and '"patient_ref": "p' not in raw["raw_line_redacted"]
+            assert raw["redacted_fields"] == ["patient_ref", "device_id"]
             assert raw["loaded_by"]["file_sha256"]
-            assert item["reading"]["submission_id"] in raw["raw_line"]
+            assert item["reading"]["submission_id"] in raw["raw_line_redacted"]
         triggers = [i for i in e["evidence"] if i["role"] == "trigger"]
         if rule_id == "BP_SEVERE":
             assert triggers and all(i["rule_result"]["outcome"] == "fired" for i in triggers)

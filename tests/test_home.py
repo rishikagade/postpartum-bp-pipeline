@@ -50,8 +50,10 @@ def cohort_db(tmp_path: Path) -> Path:
             deceased = DISCHARGE + timedelta(days=3, hours=6) if i == 0 else None
             con.execute("INSERT INTO cohort.postpartum_cohort VALUES (?, 1, ?, '66348005', ?, ?, ?, 'native', ?, "
                         "'398254007', ?, ?, false)",
-                        [f"p{i:02d}", f"proc{i}", f"enc{i}", DISCHARGE - timedelta(hours=1), DISCHARGE,
+                        [f"SID-p{i:02d}", f"proc{i}", f"enc{i}", DISCHARGE - timedelta(hours=1), DISCHARGE,
                          f"hdp{i}", DISCHARGE - timedelta(days=30), deceased])
+            # The vendor knows patients by record number "p00".. (D30).
+            con.execute("INSERT INTO phi.patient_key VALUES (?, ?, 'test')", [f"SID-p{i:02d}", f"p{i:02d}"])
     return db
 
 
@@ -127,8 +129,8 @@ def cfg() -> dict:
 @pytest.fixture
 def roster() -> dict[str, Enrollment]:
     end = DISCHARGE_UTC + timedelta(days=11)
-    return {"p1": Enrollment("p1", "d1", "America/New_York", True, DISCHARGE_UTC, end, None, "e", 1),
-            "dead": Enrollment("dead", "d2", "America/New_York", True, DISCHARGE_UTC,
+    return {"p1": Enrollment("SID-p1", "America/New_York", True, DISCHARGE_UTC, end, None, "e", 1),
+            "dead": Enrollment("SID-dead", "America/New_York", True, DISCHARGE_UTC,
                                DISCHARGE_UTC + timedelta(days=2), DISCHARGE_UTC + timedelta(days=2), "e", 2)}
 
 
@@ -179,7 +181,7 @@ def test_local_time_labelled_utc_is_corrected_to_the_patient_zone(cfg, roster) -
 
 
 def test_correct_offsets_are_left_alone_across_dst(cfg, roster) -> None:
-    roster["p1"] = Enrollment("p1", "d1", "America/New_York", True, datetime(2020, 3, 6, tzinfo=UTC),
+    roster["p1"] = Enrollment("SID-p1", "America/New_York", True, datetime(2020, 3, 6, tzinfo=UTC),
                               datetime(2020, 3, 17, tzinfo=UTC), None, "e", 1)
     # 2020-03-08 is the US switch to daylight time: -05:00 before, -04:00 after.
     assert _clean(_rec(measured_at="2020-03-07T08:00:00-05:00"), cfg, roster).flags == []
@@ -299,3 +301,14 @@ def test_every_time_zone_correction_is_visible_on_the_record(tmp_path: Path, coh
     assert injected["as expected"] == len(corrected)
     assert _query(cohort_db, """SELECT count(*) FROM home.reading
         WHERE measured_at_source LIKE '%Z' AND NOT list_contains(flags, 'tz_corrected')""") == [(0,)]
+
+
+def test_cleaned_tables_carry_study_ids_not_record_numbers(tmp_path: Path, cohort_db: Path) -> None:
+    _pipeline(tmp_path, cohort_db, _config(tmp_path, **MESSY))
+    for table in ("home.enrollment", "home.reading", "timeline.bp_reading"):
+        ids = {r[0] for r in _query(cohort_db, f"SELECT DISTINCT patient_id FROM {table}")}
+        assert ids and all(i.startswith("SID-p") for i in ids), table
+    assert {r[0] for r in _query(cohort_db, "SELECT DISTINCT patient_id FROM home.reading_rejection "
+                                            "WHERE patient_id IS NOT NULL")} <= {f"SID-p{i:02d}" for i in range(20)}
+    cols = [r[0] for r in _query(cohort_db, "DESCRIBE home.enrollment")]
+    assert "device_id" not in cols     # a device serial number identifies the patient (D30)
