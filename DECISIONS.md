@@ -551,3 +551,26 @@ PLAN.md still isn't in the repo. Phase 7 follows REQUIREMENTS R8, the three user
   - **Without OCR:** only metadata is checked, and the report says so (`images_ocr`).
 - **On this data:** with OCR, all 4 screenshots pass. Proof that it catches IDs: an earlier unmasked screenshot of the privacy officer's held alerts fails, with 5 study IDs and 6 alert IDs read from the image. A portable test (no OCR needed) plants a study ID in a PNG's metadata and checks it's caught.
 - **What's visible:** the screenshots show synthetic service dates and enrollment numbers. Dates are the documented limitation in D30.
+
+## Phase 8: README
+
+### D47. The full README
+- **Structure:** the README follows the Phase 8 brief from the original plan, as given in review: the citation rules, the before-and-after alert table, a "How this builds on DataTrust AI" section, the screenshots, and an honest Limitations section. It also covers what the pipeline does, a quick start, each stage, lineage, privacy, the quality report, the viewer, the exact tech stack, and testing.
+- **Citations:** every external fact, code, threshold and standard cites a source checked on 2026-10-15, or on 2026-10-17 for the two DataTrust AI sources (permalinks to `scoring.py` and `implementations.py` at the commit read).
+- **Numbers:** every number about this project comes from the pipeline's own output.
+- **Checked mechanically:** every citation has a source and every source is cited; linked files exist; table-of-contents links resolve; and no study or alert IDs appear.
+- **One claim dropped:** "the same 11 severe alerts with identical IDs" was true when compared in Phase 5. Alert IDs changed when Phase 5b swapped in study IDs, so the README says only that the same 11 severe alerts remain.
+- **PLAN.md (closed in review):** it won't be added to the repo. Earlier entries that say "PLAN.md isn't in the repo" record how those phases were built. Where a phase departed from the plan, this file says so (D45, D48).
+- **DataTrust AI link (decided in review):** the README links `rishikagade/DataTrust_AI`, and cites `scoring.py` and `implementations.py` at the commit read (`e224897`).
+
+### D48. Deviation from the plan: the API uses the standard-library `http.server`, not FastAPI (accepted in review)
+- **The plan:** FastAPI for the API.
+- **What was built:** `ppbp.api.server` on Python's built-in `http.server`.
+- **Why:**
+  - **No new dependencies:** no web framework, ASGI server or validation library to pin and audit, and the project stays on one Python environment.
+  - **The API is small:** about ten GET endpoints. Each is a single call into the access layer, which already does the role checks, the logging and the response shapes. So a framework's routing, dependency injection and validation would add little.
+  - **One request at a time fits the database:** DuckDB allows one writer per file, and every read writes to the access log (D40).
+- **Cost:**
+  - **No automatic OpenAPI documentation and no request or response models:** the endpoints are documented in D41 and the module docstring instead.
+  - **Not production-grade:** single-threaded, localhost only, simulated roles, no TLS. It's a local demo server.
+  - **Different from the plan:** moving to FastAPI would mean rewriting the route table in `server.py` only, since the access layer stays the same.
